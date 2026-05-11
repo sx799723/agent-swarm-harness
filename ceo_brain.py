@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Agent Swarm CEO Brain
-CEO 任务拆解 + 结果汇总
+CEO 任务拆解 + 结果汇总 + Context Passing（Worker结果复用）
 
 负责：
 1. 理解用户任务
 2. 拆解成可执行的子任务（Worker Goals）
-3. 把任务交给 Harness 执行
-4. 汇总 Worker 结果形成最终报告
+3. 自动建立 Worker 之间的依赖关系（Context Passing）
+4. 把任务交给 Harness 执行
+5. 汇总 Worker 结果形成最终报告
 """
 
 import json
@@ -200,24 +201,53 @@ class CEOBrain:
             "subtasks": subtasks,
         }
 
-    def _make_worker_goal(self, goal: str) -> str:
+    def _make_worker_goal(self, goal: str, context: dict = None) -> str:
         """
-        给 Worker 的 goal 加上执行指令前缀
-        要求 Worker 实际执行任务，而不是仅返回文本
+        给 Worker 的 goal 加上执行指令前缀 + Context Passing 指令
+        要求 Worker 实际执行任务，并告知上下游产出位置
         """
-        return (
-            f"你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n\n"
-            f"当前项目路径：{PROJECT_ROOT}\n\n"
-            "要求：\n"
-            "1. 如果需要写文件，使用 write_file 工具实际写入\n"
-            "2. 如果需要运行代码，使用 terminal 工具实际执行\n"
-            "3. 完成后返回执行结果（实际输出/文件路径）\n\n"
-            "任务：\n" + goal
-        )
+        lines = [
+            "你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n",
+        ]
+
+        if context:
+            lines.append(f"当前任务ID: {context.get('task_id', 'N/A')}")
+            lines.append(f"你的工作目录: {context.get('output_dir', PROJECT_ROOT)}")
+            lines.append("")
+
+            # 上游依赖信息
+            upstream = context.get("input_from", [])
+            if upstream:
+                lines.append("【重要：上游Worker产出】")
+                for up in upstream:
+                    lines.append(f"  Worker [{up['worker_id']}] ({up['worker_type']}) 的产出目录: {up['output_dir']}")
+                lines.append("请在上述目录中查看上游Worker的产出文件，作为你的输入参考。")
+                lines.append("")
+
+            # 下游产出约定
+            lines.append("【你的产出】")
+            lines.append(f"  产出目录: {context.get('output_dir', PROJECT_ROOT)}")
+            lines.append("  请将你的产出文件写入该目录，便于下游Worker读取。")
+            lines.append("")
+
+        lines.extend([
+            "要求：",
+            "1. 如果需要写文件，使用 write_file 工具实际写入",
+            "2. 如果需要运行代码，使用 terminal 工具实际执行",
+            "3. 完成后返回执行结果（实际输出/文件路径）\n",
+            "任务：\n" + goal,
+        ])
+
+        return "\n".join(lines)
 
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
         """
         执行拆解后的任务
+
+        Context Passing 机制：
+        - 每个 Worker 在独立工作目录 workspace/{task_id}/{worker_id}/ 执行
+        - 产出自动存储到 output_dir/，供下游 Worker 读取
+        - context 包含 input_from 字段，告知 Worker 从哪里读取上游产出
         """
         task_description = decomposition["task_description"]
         subtasks = decomposition["subtasks"]
@@ -229,18 +259,59 @@ class CEOBrain:
             goal=decomposition["task_goal"],
         )
 
-        # 2. 转换为 harness 格式（给每个 goal 加上执行指令前缀）
-        workers = [
-            {
-                "id": st["id"],
-                "worker_type": st["worker_type"],
-                "goal": self._make_worker_goal(st["goal"]),
-                "context": st.get("context", {}),
-            }
-            for st in subtasks
-        ]
+        # 2. 构建 Context Passing 信息
+        #    建立依赖图：哪些 Worker 的产出是哪些 Worker 的输入
+        workspace = os.path.join(PROJECT_ROOT, "workspace", task_id)
+        os.makedirs(workspace, exist_ok=True)
 
-        # 3. 一站式执行
+        # 根据 worker 类型确定依赖关系
+        # doc/qa 依赖 code（代码产出是数据来源）
+        # ppt 依赖 doc/qa（报告是 PPT 内容来源）
+        dependency_rules = {
+            "doc_worker":  ["code_worker"],    # 文档依赖代码产出
+            "qa_worker":  ["code_worker"],    # 测试依赖代码产出
+            "ppt_worker": ["doc_worker", "code_worker"],  # PPT 依赖文档/代码
+        }
+
+        # 3. 为每个 subtask 构造完整的 context（含 Context Passing 信息）
+        workers = []
+        for st in subtasks:
+            worker_id = st["id"]
+            worker_type = st["worker_type"]
+            output_dir = os.path.join(workspace, worker_id)
+            os.makedirs(output_dir, exist_ok=True)
+
+            # 查找上游 Worker（依赖者）
+            deps = dependency_rules.get(worker_type, [])
+            upstream_workers = []
+            for dep_type in deps:
+                for st2 in subtasks:
+                    if st2["worker_type"] == dep_type:
+                        upstream_workers.append({
+                            "worker_id": st2["id"],
+                            "worker_type": dep_type,
+                            "output_dir": os.path.join(workspace, st2["id"]),
+                        })
+
+            # 构造 enhanced context
+            context = st.get("context", {}).copy()
+            context.update({
+                "task_id": task_id,
+                "workspace": workspace,
+                "output_dir": output_dir,
+                "input_from": upstream_workers,  # 上游 Worker 的输出目录列表
+                "worker_type": worker_type,
+                "subtask_title": st.get("title", ""),
+            })
+
+            workers.append({
+                "id": worker_id,
+                "worker_type": worker_type,
+                "goal": self._make_worker_goal(st["goal"], context),
+                "context": context,
+            })
+
+        # 4. 一站式执行
         result = self.harness.run(task_id, workers, parallel=parallel)
         return result
 
