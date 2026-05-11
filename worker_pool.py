@@ -15,6 +15,7 @@ from typing import Optional
 import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
+from config import PROJECT_ROOT
 
 # ─────────────────────────────────────────
 # Worker 类型 → Skill 映射
@@ -75,10 +76,6 @@ class WorkerPool:
         print(f"[WorkerPool] Spawning {worker_id} (type={worker_type})")
         print(f"[WorkerPool] Goal: {goal[:100]}...")
 
-        # 构建 hermes chat -q 命令
-        # 使用 profile 指定 worker 类型
-        profile_flag = f"--profile {WORKER_TYPE_PROFILE.get(worker_type, 'default')}" if WORKER_TYPE_PROFILE.get(worker_type) else ""
-
         # 构建 skill 标志
         skill = WORKER_TYPE_SKILLS.get(worker_type)
         skill_flag = f"-s {skill}" if skill else ""
@@ -91,8 +88,9 @@ class WorkerPool:
         # 完整的 prompt（带上 context）
         full_goal = goal + context_str
 
-        # 使用 hermes chat -q 执行（后台运行）
-        cmd = f"hermes chat {profile_flag} {skill_flag} -q {json.dumps(full_goal)}"
+        # Worker 执行时复用当前环境的 API 配置（不指定 profile）
+        # --quiet 抑制TUI噪音，只输出干净的响应文本
+        cmd = f"hermes chat {skill_flag} -q {json.dumps(full_goal)} --quiet"
 
         print(f"[WorkerPool] Executing: {cmd[:120]}...")
 
@@ -104,14 +102,14 @@ class WorkerPool:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                cwd=os.path.expanduser("~")
+                cwd=PROJECT_ROOT
             )
 
             with self._lock:
                 self._running_workers[worker_id] = proc
 
             # 等待完成（同步等待）
-            stdout, stderr = proc.communicate(timeout=600)  # 10分钟超时
+            stdout, stderr = proc.communicate(timeout=7200)  # 2小时超时
 
             with self._lock:
                 if worker_id in self._running_workers:
