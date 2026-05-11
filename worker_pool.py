@@ -108,7 +108,7 @@ class WorkerPool:
                 self._running_workers[worker_id] = proc
 
             # 等待完成（同步等待）
-            stdout, stderr = proc.communicate(timeout=600)  # 10分钟超时
+            stdout, stderr = proc.communicate(timeout=7200)  # 2小时超时
 
             with self._lock:
                 if worker_id in self._running_workers:
