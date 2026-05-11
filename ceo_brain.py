@@ -18,6 +18,11 @@ import uuid
 
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT
+from session_store import (
+    create_task,
+    get_task,
+    update_task_status,
+)
 from harness import AgentSwarmHarness
 
 
@@ -562,7 +567,7 @@ worker_type 类型说明：
         aggregated = self.harness.aggregate_results({
             wid: self._dict_to_result(r) for wid, r in all_results.items()
         })
-        self.harness.update_task_status(task_id, "completed", result=aggregated)
+        update_task_status(task_id, "completed", result=aggregated)
 
         return {
             "task_id": task_id,
@@ -724,11 +729,12 @@ worker_type 类型说明：
         report = self.aggregate(
             task_id=execution["task_id"],
             task_goal=decomposition["task_goal"],
-            worker_results=execution["worker_results"],
+            worker_results=execution["execution"]["worker_results"],
         )
 
         return {
             "task_id": execution["task_id"],
+            "status": execution["status"],
             "decomposition": decomposition,
             "execution": execution,
             "report": report,
