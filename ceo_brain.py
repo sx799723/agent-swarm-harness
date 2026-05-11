@@ -16,6 +16,7 @@ import os
 import uuid
 
 sys.path.insert(0, os.path.dirname(__file__))
+from config import PROJECT_ROOT
 from harness import AgentSwarmHarness
 
 
@@ -178,7 +179,8 @@ class CEOBrain:
         要求 Worker 实际执行任务，而不是仅返回文本
         """
         return (
-            "你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n\n"
+            f"你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n\n"
+            f"当前项目路径：{PROJECT_ROOT}\n\n"
             "要求：\n"
             "1. 如果需要写文件，使用 write_file 工具实际写入\n"
             "2. 如果需要运行代码，使用 terminal 工具实际执行\n"

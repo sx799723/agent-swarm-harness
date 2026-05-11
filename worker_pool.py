@@ -15,6 +15,7 @@ from typing import Optional
 import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
+from config import PROJECT_ROOT
 
 # ─────────────────────────────────────────
 # Worker 类型 → Skill 映射
@@ -101,7 +102,7 @@ class WorkerPool:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                cwd=os.path.expanduser("~")
+                cwd=PROJECT_ROOT
             )
 
             with self._lock:
