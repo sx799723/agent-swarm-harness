@@ -87,10 +87,9 @@ class WorkerPool:
         # 完整的 prompt（带上 context）
         full_goal = goal + context_str
 
-        # 构建 hermes chat -q 命令
         # Worker 执行时复用当前环境的 API 配置（不指定 profile）
-        # 这样 Worker 会继承当前 shell 环境的 .env 配置
-        cmd = f"hermes chat {skill_flag} -q {json.dumps(full_goal)}"
+        # --quiet 抑制TUI噪音，只输出干净的响应文本
+        cmd = f"hermes chat {skill_flag} -q {json.dumps(full_goal)} --quiet"
 
         print(f"[WorkerPool] Executing: {cmd[:120]}...")
 
