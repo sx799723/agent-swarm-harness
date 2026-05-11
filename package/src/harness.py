@@ -42,7 +42,7 @@ class AgentSwarmHarness:
     5. 汇总结果
     """
 
-    def __init__(self, max_concurrent: int = 3, max_retries: int = 3):
+    def __init__(self, max_concurrent: int = 7, max_retries: int = 3):
         """
         Args:
             max_concurrent: 最大并发 Worker 数
