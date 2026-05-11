@@ -162,13 +162,129 @@ class CEOBrain:
         self.model = model
         self.harness = AgentSwarmHarness()
 
-    def decompose(self, task_description: str) -> dict:
+    def decompose(self, task_description: str, use_llm: bool = None) -> dict:
         """
         理解任务并拆解成子任务
-        Returns: dict with task info + subtasks
+
+        策略：
+        - 如果任务简单（有关键词匹配），用规则快速拆解
+        - 如果任务复杂（模糊、多意图），交给 LLM 智能理解
         """
-        decomposition = self._rule_based_decompose(task_description)
-        return decomposition
+        # 简单检测：是否有多意图信号（"和"、"然后"、"同时"、"并且"）
+        multi_intent_signals = ["和", "然后", "同时", "并且", "以及", "并且", "加", "或者", "或"]
+        has_complex_structure = any(sig in task_description for sig in multi_intent_signals)
+
+        # 模糊信号：没有明确类型关键词时
+        task_lower = task_description.lower()
+        clear_type_kw = ["ppt", "视频", "调研", "测试", "文档", "写代码", "开发", "设计", "ui"]
+        has_clear_type = any(kw in task_lower for kw in clear_type_kw)
+
+        # 自动判断：复杂结构或无明确类型 → LLM
+        if use_llm is None:
+            use_llm = has_complex_structure or not has_clear_type
+
+        if use_llm:
+            print(f"[CEO] 复杂任务，启用 LLM 智能拆解...")
+            decomposition = self._llm_decompose(task_description)
+            if decomposition:
+                return decomposition
+
+        # 兜底到规则
+        print(f"[CEO] 使用规则快速拆解...")
+        return self._rule_based_decompose(task_description)
+
+    def _llm_decompose(self, task_description: str) -> dict:
+        """
+        LLM 智能任务拆解
+        使用 hermes chat -q 调用 LLM 理解复杂任务意图
+        """
+        import subprocess, json
+
+        prompt = f"""你是一个任务拆解专家。请分析以下用户任务，拆解成可执行的子任务。
+
+任务：{task_description}
+
+请以 JSON 格式输出你的拆解结果，格式如下：
+{{
+  "task_title": "任务标题（50字内）",
+  "task_description": "完整任务描述",
+  "task_goal": "CEO层总体目标",
+  "subtasks": [
+    {{
+      "title": "子任务标题",
+      "goal": "给 Worker 的具体目标描述（要具体，说明在什么目录下做什么）",
+      "worker_type": "code_worker/ppt_worker/doc_worker/qa_worker/ui_worker/video_worker/research_worker/generic_worker",
+      "context": {{"aspect": "development/presentation/documentation/etc"}}
+    }}
+  ]
+}}
+
+worker_type 类型说明：
+- code_worker：写代码、开发脚本、实现功能
+- ppt_worker：PPT、演示文稿、幻灯片
+- doc_worker：文档、报告、表格、数据整理
+- qa_worker：测试、验证、质量检查、评审
+- ui_worker：UI设计、海报、logo、视觉设计
+- video_worker：视频剪辑、配音
+- research_worker：调研、搜索、分析
+- generic_worker：以上都不适合时使用
+
+拆分原则：
+1. 每个 worker 只拿自己需要完成的那部分任务，不是复制完整任务
+2. 考虑任务之间的依赖关系（代码完成后才能写文档）
+3. 2-4个子任务为宜，不要过度拆分
+4. goal 要具体，包含项目路径和具体操作
+
+输出 JSON，不要有其他文字："""
+
+        # 调用 hermes chat -q 执行 LLM 理解
+        try:
+            result = subprocess.run(
+                ["hermes", "chat", "-q", prompt, "-Q"],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            output = result.stdout.strip()
+
+            # 尝试解析 JSON（可能包含在 markdown 代码块中）
+            json_text = output
+            # 去掉 markdown 代码块包装
+            if "```json" in output:
+                parts = output.split("```json")
+                if len(parts) > 1:
+                    json_text = parts[1].split("```")[0].strip()
+            elif "```" in output:
+                parts = output.split("```")
+                if len(parts) > 1:
+                    json_text = parts[1].strip()
+
+            decomposition = json.loads(json_text)
+
+            # 补充缺失字段
+            if "task_goal" not in decomposition:
+                decomposition["task_goal"] = f"完成用户任务：{decomposition.get('task_description', task_description)}"
+            if "task_title" not in decomposition:
+                decomposition["task_title"] = task_description[:50]
+
+            # 为每个 subtask 补充 id
+            for st in decomposition.get("subtasks", []):
+                if "id" not in st:
+                    st["id"] = f"subtask-{uuid.uuid4().hex[:6]}"
+                if "goal" not in st:
+                    st["goal"] = st.get("title", "通用任务")
+
+            return decomposition
+
+        except subprocess.TimeoutExpired:
+            print("[CEO] LLM 拆解超时，回退到规则方法")
+            return None
+        except json.JSONDecodeError as e:
+            print(f"[CEO] LLM 输出 JSON 解析失败: {e}，回退到规则方法")
+            return None
+        except Exception as e:
+            print(f"[CEO] LLM 拆解异常: {e}，回退到规则方法")
+            return None
 
     def _rule_based_decompose(self, task_description: str) -> dict:
         """
