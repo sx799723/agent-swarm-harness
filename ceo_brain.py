@@ -13,8 +13,9 @@ CEO 任务拆解 + 结果汇总
 import json
 import sys
 import os
-sys.path.insert(0, os.path.dirname(__file__))
+import uuid
 
+sys.path.insert(0, os.path.dirname(__file__))
 from harness import AgentSwarmHarness
 
 
@@ -59,83 +60,6 @@ WORKER_TYPES = {
 
 
 # ─────────────────────────────────────────
-# CEO Brain 提示词
-# ─────────────────────────────────────────
-
-TASK_DECOMPOSITION_PROMPT = """你是一个任务拆解专家。当用户给出一个任务时，你需要：
-
-1. **理解任务意图**：用户真正想要的是什么？
-2. **拆解子任务**：把大任务拆成3-8个可并行执行的子任务
-3. **匹配Worker类型**：每个子任务匹配一个最合适的Worker类型
-4. **输出结构化JSON**
-
-## Worker类型说明：
-{worker_types}
-
-## 输出格式（必须严格JSON）：
-```json
-{{
-  "task_title": "任务标题",
-  "task_description": "任务详细描述",
-  "task_goal": "CEO给Harness的总目标描述",
-  "subtasks": [
-    {{
-      "id": "subtask-1",
-      "title": "子任务标题",
-      "goal": "具体的执行goal，要清晰、可操作",
-      "worker_type": "code_worker|ppt_worker|video_worker|ui_worker|qa_worker|doc_worker|research_worker|generic_worker",
-      "context": {{}},
-      "depends_on": []
-    }}
-  ]
-}}
-```
-
-## 规则：
-- subtasks 数量控制在 3-8 个
-- goal 描述要具体，包含交付标准
-- depends_on 填写依赖的 subtask id（可选）
-- context 填写任务需要的额外信息（如文件路径、参考资料等）
-- 如果任务无法拆分（如只是简单问答），subtasks 可以只有1个
-"""
-
-
-RESULT_AGGREGATION_PROMPT = """你是一个结果汇总专家。Worker们已经完成了各自的任务，现在需要你：
-
-1. **分析每个Worker的结果**：哪些成功了，哪些失败了
-2. **识别关键成果**：用户最关心的交付物是什么
-3. **识别问题**：哪里出了问题，原因是什么
-4. **给出建议**：下一步应该怎么做
-
-## Worker执行结果：
-{worker_results}
-
-## 原始任务目标：
-{task_goal}
-
-## 输出格式：
-```
-## 执行汇总
-
-### 总体状态
-- 成功: X/Y
-- 失败: X/Y
-
-### 关键成果
-[列出最重要的交付物]
-
-### 问题分析
-[列出失败原因和改进建议]
-
-### 下一步建议
-[告诉用户接下来应该做什么]
-```
-
-请给出清晰、可操作的汇总报告。
-"""
-
-
-# ─────────────────────────────────────────
 # CEO Brain 类
 # ─────────────────────────────────────────
 
@@ -151,33 +75,16 @@ class CEOBrain:
     """
 
     def __init__(self, model: str = None):
-        self.model = model  # 后续可扩展用指定模型
+        self.model = model
         self.harness = AgentSwarmHarness()
 
     def decompose(self, task_description: str) -> dict:
         """
         理解任务并拆解成子任务
-
         Returns: dict with task info + subtasks
         """
-        # 格式化 worker 类型说明
-        worker_types_str = "\n".join([
-            f"- {k}: {v['description']}"
-            for k, v in WORKER_TYPES.items()
-        ])
-
-        prompt = TASK_DECOMPOSITION_PROMPT.format(
-            worker_types=worker_types_str
-        )
-
-        # 这里调用LLM进行拆解（当前版本先用规则）
-        # TODO: 后续接入LLM进行真正的智能拆解
-        import uuid
-
-        # 简单规则拆解（演示用）
-        # 后续替换为LLM调用
+        # 基于规则的简单任务拆解（后续可替换为LLM智能拆解）
         decomposition = self._rule_based_decompose(task_description)
-
         return decomposition
 
     def _rule_based_decompose(self, task_description: str) -> dict:
@@ -185,12 +92,7 @@ class CEOBrain:
         基于规则的简单任务拆解
         TODO: 后续替换为LLM智能拆解
         """
-        import uuid
-        import time
-
-        task_id = f"task-{uuid.uuid4().hex[:8]}"
         task_lower = task_description.lower()
-
         subtasks = []
 
         # 代码相关任务
@@ -270,14 +172,26 @@ class CEOBrain:
             "subtasks": subtasks,
         }
 
+    def _make_worker_goal(self, goal: str) -> str:
+        """
+        给 Worker 的 goal 加上执行指令前缀
+        要求 Worker 实际执行任务，而不是仅返回文本
+        """
+        return (
+            "你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n\n"
+            "要求：\n"
+            "1. 如果需要写文件，使用 write_file 工具实际写入\n"
+            "2. 如果需要运行代码，使用 terminal 工具实际执行\n"
+            "3. 完成后返回执行结果（实际输出/文件路径）\n\n"
+            "任务：\n" + goal
+        )
+
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
         """
         执行拆解后的任务
-
         Args:
             decomposition: decompose() 返回的结果
             parallel: 是否并行执行
-
         Returns:
             执行结果（包含 harness.run 的完整返回）
         """
@@ -291,12 +205,12 @@ class CEOBrain:
             goal=decomposition["task_goal"],
         )
 
-        # 2. 转换为 harness 格式
+        # 2. 转换为 harness 格式（给每个 goal 加上执行指令前缀）
         workers = [
             {
                 "id": st["id"],
                 "worker_type": st["worker_type"],
-                "goal": st["goal"],
+                "goal": self._make_worker_goal(st["goal"]),
                 "context": st.get("context", {}),
             }
             for st in subtasks
@@ -304,29 +218,17 @@ class CEOBrain:
 
         # 3. 一站式执行
         result = self.harness.run(task_id, workers, parallel=parallel)
-
         return result
 
     def aggregate(self, task_id: str, task_goal: str, worker_results: dict) -> str:
         """
         汇总 Worker 结果形成最终报告
         """
-        # 格式化 worker 结果
-        results_str = json.dumps(worker_results, ensure_ascii=False, indent=2)
-
-        prompt = RESULT_AGGREGATION_PROMPT.format(
-            worker_results=results_str,
-            task_goal=task_goal,
-        )
-
-        # 当前版本：简单文本汇总
-        # TODO: 后续接入LLM进行智能汇总
         report_lines = ["## 任务执行报告\n"]
         report_lines.append(f"**任务**: {task_goal}\n")
 
         success_count = sum(1 for r in worker_results.values() if r.get("status") == "completed")
         total_count = len(worker_results)
-
         report_lines.append(f"**状态**: {success_count}/{total_count} Worker成功\n")
 
         for wid, result in worker_results.items():
@@ -344,7 +246,6 @@ class CEOBrain:
     def run_full_flow(self, task_description: str, parallel: bool = True) -> dict:
         """
         完整流程：拆解 → 执行 → 汇总
-
         Returns:
             {
                 "task_id": ...,
@@ -393,11 +294,10 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Agent Swarm CEO Brain")
     parser.add_argument("task", help="要执行的任务描述")
     parser.add_argument("--serial", action="store_true", help="顺序执行而非并行")
-
     args = parser.parse_args()
 
     ceo = CEOBrain()
     result = ceo.run_full_flow(args.task, parallel=not args.serial)
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print(result["report"])
