@@ -1,0 +1,13 @@
+# MonoSwarm Dependencies
+# Core dependencies only - no external packages required
+# The system uses built-in Python libraries:
+# - sqlite3 (built-in)
+# - json (built-in)
+# - uuid (built-in)
+# - datetime (built-in)
+# - threading (built-in)
+# - concurrent.futures (built-in)
+# - subprocess (built-in)
+
+# Optional: for enhanced functionality
+# hermes-agent (installed separately via hermes CLI)

@@ -84,100 +84,79 @@ class CEOBrain:
         理解任务并拆解成子任务
         Returns: dict with task info + subtasks
         """
+        # 基于规则的简单任务拆解（后续可替换为LLM智能拆解）
         decomposition = self._rule_based_decompose(task_description)
         return decomposition
 
     def _rule_based_decompose(self, task_description: str) -> dict:
         """
-        基于规则的智能任务拆解
-        核心原则：每个worker只拿自己需要的那部分任务，不是复制完整任务
+        基于规则的简单任务拆解
+        TODO: 后续替换为LLM智能拆解
         """
         task_lower = task_description.lower()
         subtasks = []
 
-        # ─── 第一步：识别所有需要的维度 ───
-        # 注意："X审查"、"X评估"、"X检查" 是质量检查，归入qa，不是开发
-        # 只有"写X"、"开发X"、"实现X"才是开发类
-
-        # 代码相关：区分开发 vs 审查
-        has_code_dev  = any(kw in task_lower for kw in ["写代码", "开发代码", "实现代码", "写个", "开发一个", "实现一个", "构建", "写一个", "做个", "做一个"])
-        has_code_review = any(kw in task_lower for kw in ["代码审查", "代码检查", "代码质量", "代码评审"])
-        needs_code = has_code_dev and not has_code_review
-
-        # QA相关：任何"测试/验证/评估/检查/审查"都是qa
-        needs_qa = any(kw in task_lower for kw in ["测试", "验证", "质量评估", "评审", "检查", "审查", "评估"])
-
-        needs_ppt      = any(kw in task_lower for kw in ["ppt", "演示", "幻灯片", "presentation"])
-        needs_video    = any(kw in task_lower for kw in ["视频", "剪辑", "movie"])
-        needs_ui       = any(kw in task_lower for kw in ["设计", "ui", "海报", "icon", "logo", "视觉"])
-        needs_doc      = any(kw in task_lower for kw in ["文档", "报告", "表格", "excel", "csv", "季度", "年度", "整理"])
-        needs_research = any(kw in task_lower for kw in ["调研", "调查", "研究", "搜索", "搜集", "市场"])
-
-        # ─── 第二步：只加需要的worker，每个有专注goal ───
-        if needs_code:
+        # 代码相关任务
+        if any(kw in task_lower for kw in ["写", "开发", "代码", "api", "前端", "后端", "脚本", "程序"]):
             subtasks.append({
                 "id": f"subtask-{uuid.uuid4().hex[:6]}",
                 "title": "代码开发",
-                "goal": f"在{PROJECT_ROOT}下，【开发/实现】：{task_description}",
+                "goal": task_description,
                 "worker_type": "code_worker",
-                "context": {"aspect": "development"},
+                "context": {},
             })
 
-        if needs_qa:
-            subtasks.append({
-                "id": f"subtask-{uuid.uuid4().hex[:6]}",
-                "title": "测试验证",
-                "goal": f"在{PROJECT_ROOT}下，【测试/质量】：{task_description}",
-                "worker_type": "qa_worker",
-                "context": {"aspect": "testing"},
-            })
-
-        if needs_research:
-            subtasks.append({
-                "id": f"subtask-{uuid.uuid4().hex[:6]}",
-                "title": "市场调研",
-                "goal": f"【调研/分析】：{task_description}",
-                "worker_type": "research_worker",
-                "context": {"aspect": "research"},
-            })
-
-        if needs_ppt:
+        # PPT相关
+        if any(kw in task_lower for kw in ["ppt", "演示", "幻灯片", "presentation"]):
             subtasks.append({
                 "id": f"subtask-{uuid.uuid4().hex[:6]}",
                 "title": "PPT制作",
-                "goal": f"【PPT/演示】：{task_description}",
+                "goal": task_description,
                 "worker_type": "ppt_worker",
-                "context": {"aspect": "presentation"},
+                "context": {},
             })
 
-        if needs_ui:
-            subtasks.append({
-                "id": f"subtask-{uuid.uuid4().hex[:6]}",
-                "title": "UI设计",
-                "goal": f"【设计/视觉】：{task_description}",
-                "worker_type": "ui_worker",
-                "context": {"aspect": "design"},
-            })
-
-        if needs_video:
+        # 视频相关
+        if any(kw in task_lower for kw in ["视频", "剪辑", "movie", "video"]):
             subtasks.append({
                 "id": f"subtask-{uuid.uuid4().hex[:6]}",
                 "title": "视频制作",
-                "goal": f"【视频/剪辑】：{task_description}",
+                "goal": task_description,
                 "worker_type": "video_worker",
-                "context": {"aspect": "production"},
+                "context": {},
             })
 
-        if needs_doc:
+        # UI/设计相关
+        if any(kw in task_lower for kw in ["设计", "ui", "图", "海报", "icon", "logo"]):
+            subtasks.append({
+                "id": f"subtask-{uuid.uuid4().hex[:6]}",
+                "title": "UI设计",
+                "goal": task_description,
+                "worker_type": "ui_worker",
+                "context": {},
+            })
+
+        # 测试相关
+        if any(kw in task_lower for kw in ["测试", "test", "验证"]):
+            subtasks.append({
+                "id": f"subtask-{uuid.uuid4().hex[:6]}",
+                "title": "测试验证",
+                "goal": task_description,
+                "worker_type": "qa_worker",
+                "context": {},
+            })
+
+        # 文档相关
+        if any(kw in task_lower for kw in ["文档", "报告", "表格", "doc", "excel", "csv"]):
             subtasks.append({
                 "id": f"subtask-{uuid.uuid4().hex[:6]}",
                 "title": "文档处理",
-                "goal": f"【文档/报告】：{task_description}",
+                "goal": task_description,
                 "worker_type": "doc_worker",
-                "context": {"aspect": "documentation"},
+                "context": {},
             })
 
-        # 默认：没有任何类型匹配时，用通用worker
+        # 默认通用任务
         if not subtasks:
             subtasks.append({
                 "id": f"subtask-{uuid.uuid4().hex[:6]}",
@@ -212,6 +191,11 @@ class CEOBrain:
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
         """
         执行拆解后的任务
+        Args:
+            decomposition: decompose() 返回的结果
+            parallel: 是否并行执行
+        Returns:
+            执行结果（包含 harness.run 的完整返回）
         """
         task_description = decomposition["task_description"]
         subtasks = decomposition["subtasks"]
@@ -264,6 +248,13 @@ class CEOBrain:
     def run_full_flow(self, task_description: str, parallel: bool = True) -> dict:
         """
         完整流程：拆解 → 执行 → 汇总
+        Returns:
+            {
+                "task_id": ...,
+                "decomposition": ...,
+                "execution": ...,
+                "report": ...
+            }
         """
         print(f"[CEO] 收到任务: {task_description}")
 
