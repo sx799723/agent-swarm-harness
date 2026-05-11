@@ -136,6 +136,8 @@ class WorkerPool:
         goal: str,
         context: dict = None,
         max_retries: int = 3,
+        timeout: int = 7200,
+        priority: int = 0,
         on_complete: Callable[[WorkerResult], None] = None,
     ) -> str:
         """
@@ -147,6 +149,8 @@ class WorkerPool:
             goal:          任务描述
             context:       额外上下文（传递给worker）
             max_retries:   最大重试次数（预留）
+            timeout:       执行超时（秒），默认7200（2小时）
+            priority:      优先级，数值越高越先调度，默认0
             on_complete:   执行完成时的回调函数
 
         Returns:
@@ -186,22 +190,28 @@ class WorkerPool:
                 "goal": goal,
                 "result": None,
                 "on_complete": on_complete,
+                "timeout": timeout,
+                "priority": priority,
             }
 
         # 在独立线程中监控结果（非阻塞）
         thread = threading.Thread(
             target=self._monitor,
-            args=(worker_id,),
+            args=(worker_id, timeout),
             daemon=True,
         )
         thread.start()
 
         return worker_id
 
-    def _monitor(self, worker_id: str):
+    def _monitor(self, worker_id: str, timeout: int = 7200):
         """
         监控子进程，完成后设置结果并调用回调
         在独立线程中运行，不阻塞其他worker
+
+        Args:
+            worker_id: worker标识
+            timeout: 超时秒数（从spawn传入）
         """
         with self._lock:
             if worker_id not in self._workers:
@@ -209,7 +219,7 @@ class WorkerPool:
             proc = self._workers[worker_id]["proc"]
 
         try:
-            stdout, stderr = proc.communicate(timeout=7200)  # 2小时超时
+            stdout, stderr = proc.communicate(timeout=timeout)  # 动态超时
             logs, progress, final_output = parse_worker_output(stdout, stderr)
 
             if proc.returncode == 0:

@@ -104,7 +104,9 @@ class AgentSwarmHarness:
                 worker_type=worker_type,
                 goal=goal,
                 context=context,
-                max_retries=max_retries
+                max_retries=max_retries,
+                timeout=w.get("timeout", 7200),
+                priority=w.get("priority", 0),
             )
             assign_worker_to_task(task_id, worker_id)
             worker_ids.append(worker_id)
@@ -129,7 +131,9 @@ class AgentSwarmHarness:
             worker_type=worker["worker_type"],
             goal=worker["goal"],
             context=worker.get("context"),
-            max_retries=worker.get("max_retries"),
+            max_retries=worker.get("max_retries", self.max_retries),
+            timeout=worker.get("timeout", 7200),
+            priority=worker.get("priority", 0),
         )
 
         # 更新状态

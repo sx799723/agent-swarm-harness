@@ -169,16 +169,16 @@ def get_all_tasks() -> list[dict]:
 # Worker 操作
 # ─────────────────────────────────────────
 
-def create_worker(task_id: str, worker_id: str, worker_type: str, goal: str, context: dict = None, max_retries: int = 3) -> str:
+def create_worker(task_id: str, worker_id: str, worker_type: str, goal: str, context: dict = None, max_retries: int = 3, timeout: int = 7200, priority: int = 0) -> str:
     """创建 worker"""
     conn = get_db()
     cur = conn.cursor()
     cur.execute(
-        """INSERT INTO workers (id, task_id, worker_type, goal, context, max_retries)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (worker_id, task_id, worker_type, goal, json.dumps(context or {}), max_retries)
+        """INSERT INTO workers (id, task_id, worker_type, goal, context, max_retries, timeout, priority)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (worker_id, task_id, worker_type, goal, json.dumps(context or {}), max_retries, timeout, priority)
     )
-    _log(conn, "worker", worker_id, "created", {"task_id": task_id, "worker_type": worker_type})
+    _log(conn, "worker", worker_id, "created", {"task_id": task_id, "worker_type": worker_type, "timeout": timeout, "priority": priority})
     conn.commit()
     conn.close()
     return worker_id
