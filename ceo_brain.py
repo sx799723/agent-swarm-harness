@@ -22,43 +22,125 @@ from harness import AgentSwarmHarness
 
 
 # ─────────────────────────────────────────
-# Worker 类型定义
+# Skills 动态路由表
+# 关键词匹配 → 最适合的 skill
 # ─────────────────────────────────────────
 
-WORKER_TYPES = {
-    "code_worker": {
-        "description": "执行编码任务（前端/后端/脚本/数据库等）",
-        "skills": ["software-development/skill-creator"],
-    },
-    "ppt_worker": {
-        "description": "执行PPT/演示文稿制作",
-        "skills": ["productivity/ppt-workflow"],
-    },
-    "video_worker": {
-        "description": "执行视频剪辑、配音、导出",
-        "skills": ["media/youtube-content", "media/gif-search"],
-    },
-    "ui_worker": {
-        "description": "执行UI设计、图标、海报",
-        "skills": ["creative/baoyu-comic", "creative/baoyu-cover-image"],
-    },
-    "qa_worker": {
-        "description": "执行测试、验证、质量检查",
-        "skills": ["software-development/test-driven-development"],
-    },
-    "doc_worker": {
-        "description": "执行文档处理、数据整理、表格",
-        "skills": ["productivity/spreadsheet", "productivity/ocr-and-documents"],
-    },
-    "research_worker": {
-        "description": "执行调研、搜索、信息整理",
-        "skills": ["research/arxiv", "research/blogwatcher"],
-    },
-    "generic_worker": {
-        "description": "通用任务执行",
-        "skills": [],
-    },
+SKILL_ROUTING = {
+    # 代码开发相关
+    "code_worker": [
+        (["写代码", "开发", "实现", "构建", "编程"], "software-development/skill-creator"),
+        (["调试", "debug", "错误", "修复bug"], "software-development/systematic-debugging"),
+        (["测试", "单元测试", "test"], "software-development/test-driven-development"),
+        (["实验", "验证", "spike", "探索"], "software-development/spike"),
+        (["代码审查", "review", "审阅"], "software-development/requesting-code-review"),
+        (["debugpy", "python调试"], "software-development/python-debugpy"),
+        (["node", "js", "javascript调试"], "software-development/node-inspect-debugger"),
+        (["自动化", "脚本", "批处理"], "software-development/macos-automation"),
+    ],
+    # PPT/演示相关
+    "ppt_worker": [
+        (["ppt", "演示", "幻灯片", "presentation"], "productivity/ppt-workflow"),
+        (["生成ppt", "制作ppt", "创建ppt"], "productivity/ppt-generator"),
+        (["创意ppt", "精美ppt", "设计ppt"], "sn-ppt-creative"),
+        (["修改ppt", "编辑ppt", "更新ppt"], "productivity/powerpoint"),
+    ],
+    # 文档/数据相关
+    "doc_worker": [
+        (["excel", "表格", "csv", "数据整理", "报表"], "productivity/spreadsheet"),
+        (["pdf", "扫描件", "ocr", "提取文字"], "productivity/ocr-and-documents"),
+        (["notion", "笔记", "知识库"], "productivity/notion"),
+        (["html", "网页报告", "web页面"], "productivity/html-generator"),
+        (["文档", "报告", "整理", "归档"], "productivity/office-automation"),
+        (["airtable", "数据库"], "productivity/airtable"),
+    ],
+    # 视频相关
+    "video_worker": [
+        (["视频", "剪辑", "movie", "剪辑"], "media/youtube-content"),
+        (["gif", "动图"], "media/gif-search"),
+        (["字幕", "语音", "配音"], "media/spotify"),  # 暂无语音skill，用spotify占位
+    ],
+    # UI/设计相关
+    "ui_worker": [
+        (["封面", "cover", "海报", "banner"], "creative/baoyu-cover-image"),
+        (["知识漫画", "comic", "漫画"], "creative/baoyu-comic"),
+        (["信息图", "infographic", "图表可视化"], "creative/baoyu-infographic"),
+        (["小红书", "xhs", "配图"], "creative/baoyu-xhs-images"),
+        (["logo", "icon", "图标设计", "vi"], "creative/pixel-art"),
+    ],
+    # QA/测试相关
+    "qa_worker": [
+        (["测试", "测试用例", "test case", "单元测试"], "software-development/test-driven-development"),
+        (["质量", "评审", "代码审查"], "software-development/requesting-code-review"),
+        (["web", "网站", "界面", "ui测试"], "dogfood"),
+        (["调试", "debug", "排查"], "software-development/systematic-debugging"),
+    ],
+    # 调研相关
+    "research_worker": [
+        (["arxiv", "论文", "学术", "paper"], "research/arxiv"),
+        (["博客", "rss", "订阅", "blog"], "research/blogwatcher"),
+        (["深度调研", "市场分析", "行业研究"], "sn-deep-research"),
+        (["github", "代码搜索", "搜索代码"], "sn-search-code"),
+        (["搜索引擎", "搜索", "search"], "find-skills-skill/find-skills"),
+    ],
 }
+
+# Worker 默认 skill（未匹配时使用）
+WORKER_DEFAULT_SKILLS = {
+    "code_worker": "software-development/skill-creator",
+    "ppt_worker": "productivity/ppt-workflow",
+    "video_worker": "media/youtube-content",
+    "ui_worker": "creative/baoyu-cover-image",
+    "qa_worker": "software-development/test-driven-development",
+    "doc_worker": "productivity/spreadsheet",
+    "research_worker": "find-skills-skill/find-skills",
+    "generic_worker": "find-skills-skill/find-skills",
+}
+
+
+def select_skill_for_task(worker_type: str, goal: str) -> list[str]:
+    """
+    根据 worker_type 和具体 goal 内容，动态选择最合适的 skill(s)
+
+    Returns: skill 路径列表（可能多个）
+    """
+    goal_lower = goal.lower()
+    selected = []
+
+    # 精确匹配优先
+    for keywords, skill_path in SKILL_ROUTING.get(worker_type, []):
+        if any(kw.lower() in goal_lower for kw in keywords):
+            if skill_path not in selected:
+                selected.append(skill_path)
+
+    # 如果没有匹配，使用默认 skill
+    if not selected:
+        default = WORKER_DEFAULT_SKILLS.get(worker_type)
+        if default:
+            selected = [default]
+
+    return selected
+
+
+def build_skill_instructions(skills: list[str]) -> str:
+    """
+    把 skill 列表构建成 hermes chat -s 参数格式的指令
+    """
+    if not skills:
+        return ""
+    skill_str = ",".join(skills)
+    return (
+        f"\n\n{'='*60}\n"
+        f"【Skills 指令】\n"
+        f"请使用以下 skill(s) 完成本任务：{skill_str}\n"
+        f"调用方式：hermes chat -s {skill_str} -q \"你的任务\"\n"
+        f"{'='*60}\n"
+    )
+
+
+# ─────────────────────────────────────────
+# CEO Brain 类
+# ─────────────────────────────────────────
 
 
 # ─────────────────────────────────────────
@@ -207,14 +289,23 @@ class CEOBrain:
             "subtasks": subtasks,
         }
 
-    def _make_worker_goal(self, goal: str, context: dict = None) -> str:
+    def _make_worker_goal(self, goal: str, context: dict = None, worker_type: str = None) -> str:
         """
-        给 Worker 的 goal 加上执行指令前缀 + Context Passing 指令
-        要求 Worker 实际执行任务，并告知上下游产出位置
+        给 Worker 的 goal 加上执行指令前缀 + Context Passing 指令 + Skills 动态路由指令
+        要求 Worker 实际执行任务，并告知上下游产出位置和可用的 skills
         """
         lines = [
             "你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n",
         ]
+
+        # ─── Skills 动态路由 ───
+        skills = []
+        if worker_type:
+            from_task_goal = goal  # 使用原始 task goal 来匹配 skill
+            skills = select_skill_for_task(worker_type, from_task_goal)
+            if skills:
+                lines.append(f"【Skills 可用】: {', '.join(skills)}")
+                lines.append("")
 
         if context:
             lines.append(f"当前任务ID: {context.get('task_id', 'N/A')}")
@@ -235,6 +326,14 @@ class CEOBrain:
             lines.append(f"  产出目录: {context.get('output_dir', PROJECT_ROOT)}")
             lines.append("  请将你的产出文件写入该目录，便于下游Worker读取。")
             lines.append("")
+
+        # ─── Skills 调用指令 ───
+        if skills:
+            skill_str = ",".join(skills)
+            lines.append(
+                f"【Skills 调用指令】\n"
+                f"请使用 hermes chat -s {skill_str} 来加载对应技能后执行任务。\n"
+            )
 
         lines.extend([
             "要求：",
@@ -313,7 +412,7 @@ class CEOBrain:
             workers.append({
                 "id": worker_id,
                 "worker_type": worker_type,
-                "goal": self._make_worker_goal(st["goal"], context),
+                "goal": self._make_worker_goal(st["goal"], context, worker_type),
                 "context": context,
             })
 
