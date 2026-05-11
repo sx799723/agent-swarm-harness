@@ -113,9 +113,15 @@ class CEOBrain:
         needs_doc      = needs_doc or ("整理" in task_lower and any(kw in task_lower for kw in ["文档", "报告", "表格", "数据"]))
 
         # 代码开发：只有明确说"写代码/开发/实现/脚本/程序"才是开发任务
-        # 排除"做PPT/做视频/做设计"这类"做+具体类型"的任务
-        code_exclude   = needs_ppt or needs_video or needs_ui or needs_doc
-        needs_code     = (any(kw in task_lower for kw in ["写代码", "开发代码", "实现代码", "写个程序", "开发程序", "写个脚本", "写个小工具", "写一个脚本"]) and not code_exclude)
+        # 排除"做PPT/做视频/做设计"这类"做+具体类型"的任务（但做文档不算排除）
+        #
+        # 区分"开发X，然后做Y"（顺序任务，两者都要）vs "做Y"（只有Y）
+        # 策略：如果有明确的代码开发动词（开发/实现/写代码），即使出现"做PPT"，也保留code
+        code_dev_verbs = ["写代码", "开发代码", "实现代码", "写个程序", "开发程序", "写个脚本", "写个小工具", "写一个脚本", "开发一个", "开发个", "实现一个", "实现个"]
+        has_code_dev_verb = any(kw in task_lower for kw in code_dev_verbs)
+        # 只有当任务没有明确代码开发动词，且出现"做+具体类型"时，才排除开发
+        code_exclude = (needs_ppt or needs_video or needs_ui) and not has_code_dev_verb
+        needs_code = has_code_dev_verb and not code_exclude
         # 兜底："做一个Python/JS/网页"类任务，即使没有明确说"写代码"也算开发
         if not needs_code and not code_exclude:
             needs_code = any(kw in task_lower for kw in ["python", "javascript", "java", "c++", "golang", "rust", "网页", "网站", "前端", "后端", "api", "数据库", "爬虫", "自动化"])
@@ -269,8 +275,8 @@ class CEOBrain:
         # ppt 依赖 doc/qa（报告是 PPT 内容来源）
         dependency_rules = {
             "doc_worker":  ["code_worker"],    # 文档依赖代码产出
-            "qa_worker":  ["code_worker"],    # 测试依赖代码产出
-            "ppt_worker": ["doc_worker", "code_worker"],  # PPT 依赖文档/代码
+            "qa_worker":   ["code_worker"],    # 测试依赖代码产出
+            "ppt_worker":  ["doc_worker", "code_worker"],  # PPT 依赖文档/代码
         }
 
         # 3. 为每个 subtask 构造完整的 context（含 Context Passing 信息）
@@ -311,9 +317,151 @@ class CEOBrain:
                 "context": context,
             })
 
-        # 4. 一站式执行
-        result = self.harness.run(task_id, workers, parallel=parallel)
-        return result
+        # 4. 分 wave 执行（Hand Passing 核心）
+        #    先分析依赖图，建立执行层级
+        waves = self._build_execution_waves(workers, dependency_rules)
+
+        all_results = {}
+        for wave_idx, wave_workers in enumerate(waves):
+            wave_num = wave_idx + 1
+            print(f"[CEO] 执行 Wave {wave_num}，{len(wave_workers)} 个 Worker 并行...")
+
+            if wave_idx > 0:
+                # Hand Passing：把上游产出注入下游 Worker 的 goal
+                wave_workers = self._inject_upstream_results(wave_workers, all_results)
+
+            wave_result = self.harness.run(
+                task_id,
+                wave_workers,
+                parallel=True,  # 同 wave 内并行
+            )
+            all_results.update(wave_result.get("worker_results", {}))
+
+            # 如果有任何 worker 失败，可以选择提前终止
+            failed = [wid for wid, r in wave_result.get("worker_results", {}).items()
+                      if r.get("status") != "completed"]
+            if failed:
+                print(f"[CEO] Wave {wave_num} 中 {len(failed)} 个 Worker 失败，继续执行...")
+
+        # 5. 汇总结果
+        aggregated = self.harness.aggregate_results({
+            wid: self._dict_to_result(r) for wid, r in all_results.items()
+        })
+        self.harness.update_task_status(task_id, "completed", result=aggregated)
+
+        return {
+            "task_id": task_id,
+            "status": "completed",
+            "execution": {
+                "status": "completed",
+                "worker_results": all_results,
+                "waves": len(waves),
+            },
+            "aggregated": aggregated,
+        }
+
+    def _build_execution_waves(self, workers: list[dict], dependency_rules: dict) -> list[list[dict]]:
+        """
+        分析 Worker 之间的依赖关系，构建执行层级（waves）
+
+        同一个 wave 内的 worker 无依赖关系，可以并行
+        不同 wave 必须顺序执行（上一个 wave 完成后下一个 wave 才能开始）
+        """
+        # 建立 worker_type → worker 对象的映射
+        type_to_worker = {}
+        for w in workers:
+            wt = w["worker_type"]
+            if wt not in type_to_worker:
+                type_to_worker[wt] = []
+            type_to_worker[wt].append(w)
+
+        # 拓扑排序分 wave
+        waves = []
+        remaining = set(w["id"] for w in workers)
+        completed_types = set()
+
+        while remaining:
+            # 找所有依赖都已完成的 worker（没有依赖的也在此）
+            wave = []
+            for w in workers:
+                if w["id"] not in remaining:
+                    continue
+                deps = dependency_rules.get(w["worker_type"], [])
+                # 检查所有依赖类型的 worker 是否都已完成
+                all_deps_done = all(
+                    st in completed_types for st in deps if st in type_to_worker
+                )
+                if all_deps_done:
+                    wave.append(w)
+
+            if not wave:
+                # 理论上不应该走到这里（环检测失败），但保底放入所有剩余
+                wave = [w for w in workers if w["id"] in remaining]
+                if not wave:
+                    break
+
+            waves.append(wave)
+            for w in wave:
+                remaining.discard(w["id"])
+                completed_types.add(w["worker_type"])
+
+        return waves
+
+    def _inject_upstream_results(self, wave_workers: list[dict], all_results: dict) -> list[dict]:
+        """
+        Hand Passing：把上游 Worker 的产出注入到下游 Worker 的 goal 中
+        上游结果读取自 output_dir 中的文件
+        """
+        import glob
+
+        for w in wave_workers:
+            upstream = w["context"].get("input_from", [])
+            if not upstream:
+                continue
+
+            injected_info = []
+            for up in upstream:
+                up_id = up["worker_id"]
+                up_result = all_results.get(up_id, {})
+                up_output_dir = up["output_dir"]
+
+                # 读取上游产出文件
+                files = glob.glob(os.path.join(up_output_dir, "*"))
+                files_str = "\n".join(f"  - {os.path.basename(f)}" for f in files) if files else "  （无文件）"
+
+                injected_info.append(
+                    f"Worker [{up_id}]（{up['worker_type']}）产出：\n"
+                    f"  产出目录: {up_output_dir}\n"
+                    f"  文件列表:\n{files_str}"
+                )
+
+                # 也把结果文本注入
+                if up_result.get("result"):
+                    result_text = up_result["result"][:2000]
+                    injected_info.append(f"  结果摘要:\n{result_text}")
+
+            if injected_info:
+                # 在 goal 前面加上游产出信息
+                injection_text = (
+                    "\n\n" + "="*60 + "\n"
+                    "【Hand Passing：上游Worker产出】\n"
+                    + "\n\n".join(injected_info)
+                    + "\n" + "="*60 + "\n\n"
+                )
+                # 在 _make_worker_goal 生成的 goal 中插入
+                w["goal"] = injection_text + w["goal"]
+
+        return wave_workers
+
+    def _dict_to_result(self, d: dict):
+        """把 dict 格式的 worker result 转为 WorkerResult"""
+        from worker_pool import WorkerResult
+        return WorkerResult(
+            worker_id=d.get("worker_id", "unknown"),
+            status=d.get("status", "failed"),
+            result=d.get("result"),
+            error=d.get("error"),
+        )
 
     def aggregate(self, task_id: str, task_goal: str, worker_results: dict) -> str:
         """
