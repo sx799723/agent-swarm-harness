@@ -46,6 +46,53 @@ WORKER_TYPE_SKILLS = {
 
 
 # ─────────────────────────────────────────
+# 日志解析
+# ─────────────────────────────────────────
+
+import re
+
+LOG_PATTERN = re.compile(r"^\[(INFO|WARN|ERROR|DEBUG)\]\s*(.*)$", re.IGNORECASE)
+PROGRESS_PATTERN = re.compile(r"^\[PROGRESS\]\s*(\d+(?:\.\d+)?)\s*(?:[-:]\s*(.*))?$", re.IGNORECASE)
+
+
+def parse_worker_output(stdout: bytes, stderr: bytes) -> tuple[list[dict], float, str]:
+    """
+    解析 worker 输出，提取分级日志、进度、最终结果
+
+    Returns:
+        logs: [{"level": "INFO"|"WARN"|"ERROR", "ts": float, "msg": str}, ...]
+        progress: 0.0~1.0
+        final_output: 去掉日志行后的原始输出（用于result）
+    """
+    logs = []
+    progress = 0.0
+    output_lines = []
+
+    for raw_line in (stdout or b"").split(b"\n"):
+        line = raw_line.decode("utf-8", errors="replace").rstrip()
+        if not line:
+            continue
+
+        # 进度条：[PROGRESS] 0.75 - 正在下载...
+        prog_match = PROGRESS_PATTERN.match(line)
+        if prog_match:
+            progress = float(prog_match.group(1))
+            logs.append({"level": "PROGRESS", "ts": time.time(), "msg": line})
+            continue
+
+        # 分级日志：[INFO] / [WARN] / [ERROR]
+        log_match = LOG_PATTERN.match(line)
+        if log_match:
+            level = log_match.group(1).upper()
+            msg = log_match.group(2)
+            logs.append({"level": level, "ts": time.time(), "msg": msg})
+        else:
+            output_lines.append(line)
+
+    return logs, progress, "\n".join(output_lines)
+
+
+# ─────────────────────────────────────────
 # Worker Result 数据类
 # ─────────────────────────────────────────
 
@@ -57,6 +104,9 @@ class WorkerResult:
     error: Optional[str] = None
     session_id: Optional[str] = None
     completed_at: Optional[float] = None
+    # 可观测性增强
+    logs: list = dataclasses.field(default_factory=list)  # [{"level","ts","msg"},...]
+    progress: float = 0.0  # 0.0~1.0
 
 
 # ─────────────────────────────────────────
@@ -160,12 +210,15 @@ class WorkerPool:
 
         try:
             stdout, stderr = proc.communicate(timeout=7200)  # 2小时超时
+            logs, progress, final_output = parse_worker_output(stdout, stderr)
 
             if proc.returncode == 0:
                 result = WorkerResult(
                     worker_id=worker_id,
                     status="completed",
-                    result=stdout[:5000] if stdout else "执行完成，无输出",
+                    result=final_output if final_output.strip() else "执行完成",
+                    logs=logs,
+                    progress=1.0,
                     session_id=worker_id,
                     completed_at=time.time(),
                 )
@@ -173,8 +226,10 @@ class WorkerPool:
                 result = WorkerResult(
                     worker_id=worker_id,
                     status="failed",
-                    result=stdout[:5000] if stdout else None,
-                    error=stderr[:2000] if stderr else f"Exit code: {proc.returncode}",
+                    result=final_output if final_output.strip() else None,
+                    error=(stderr or b"").decode("utf-8", errors="replace").strip() or f"Exit code: {proc.returncode}",
+                    logs=logs,
+                    progress=progress,
                     session_id=worker_id,
                     completed_at=time.time(),
                 )
@@ -182,11 +237,14 @@ class WorkerPool:
         except subprocess.TimeoutExpired:
             proc.kill()
             stdout, _ = proc.communicate()
+            logs, progress, final_output = parse_worker_output(stdout, "执行超时（2小时）".encode())
             result = WorkerResult(
                 worker_id=worker_id,
                 status="timeout",
-                result=stdout[:5000] if stdout else None,
-                error=f"执行超时（2小时）",
+                result=final_output if final_output.strip() else None,
+                error="执行超时（2小时）",
+                logs=logs,
+                progress=progress,
                 completed_at=time.time(),
             )
 
