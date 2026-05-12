@@ -486,12 +486,17 @@ worker_type 类型说明：
 2. 提取精确的参数（路径、内容、命令等）
 3. 只输出JSON，不要其他内容
 
-支持的工具：
-- terminal: 执行shell命令（command参数）
-- write_file: 写文件（path和content参数）
-- read_file: 读取文件（path参数）
-- patch: 搜索替换文件（path, old_string, new_string参数）
-- search: 搜索文件内容（pattern, path, target参数）
+工具选择规则：
+- 如果任务包含"修改"、"替换"、"改名为"、"把...改成..."、"更新"：用 patch 工具
+  - patch参数：path(文件路径), old_string(原内容), new_string(新内容)
+- 如果任务包含"创建文件"、"写入文件"、"写文件"：用 write_file 工具
+  - write_file参数：path(路径), content(内容)
+- 如果任务包含"读取"、"查看文件内容"：用 read_file 工具
+  - read_file参数：path(路径)
+- 如果任务包含"搜索"、"查找包含"：用 search 工具
+  - search参数：pattern(关键词), path(搜索目录)
+- 其他情况：用 terminal 工具执行命令
+  - terminal参数：command(命令)
 
 输出格式（必须是有效JSON）：
 {{"tool": "工具名", "params": {{工具参数}}, "description": "任务简述"}}

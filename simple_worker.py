@@ -46,17 +46,32 @@ def _extract_task_instruction(goal: str) -> dict:
     【任务指令】
     {"tool": "...", "params": {...}, "description": "..."}
     ---
-    [其他上下文...]
-    """
-    # 找【任务指令】和---之间的JSON
-    match = re.search(r'【任务指令】\s*(\{.*?\})\s*---', goal, re.DOTALL)
-    if match:
-        try:
-            return json.loads(match.group(1))
-        except json.JSONDecodeError:
-            pass
 
-    # Fallback: 无法解析
+    JSON可能在单行或多行。
+    """
+    lines = goal.split('\n')
+
+    # 找到【任务指令】之后的行，收集直到---
+    json_lines = []
+    found_marker = False
+    for line in lines:
+        if '【任务指令】' in line:
+            found_marker = True
+            continue
+        if found_marker:
+            if line.strip().startswith('---') or line.strip().startswith('【'):
+                break
+            json_lines.append(line)
+
+    if json_lines:
+        json_str = ''.join(json_lines).strip()
+        if json_str:
+            try:
+                return json.loads(json_str)
+            except json.JSONDecodeError:
+                pass
+
+    # Fallback
     return {"tool": "unknown", "params": {}, "description": goal}
 
 
@@ -128,12 +143,44 @@ def execute_goal(goal: str, context) -> dict:
             return {"status": "error", "error": f"文件不存在: {path}"}
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
+        lines = content.count('\n')
+        # 如果描述中提到"行数"或"wc"，自动统计
+        if description and any(kw in description for kw in ["行数", "wc", "line"]):
+            return {
+                "status": "success",
+                "worker_output": f"读取成功: {path} ({len(content)} bytes, {lines} lines)",
+                "file_path": path,
+                "content": content[:500],  # 限制返回长度
+                "bytes": len(content),
+                "lines": lines,
+                "tool": "read_file"
+            }
         return {
             "status": "success",
-            "worker_output": f"读取成功: {path} ({len(content)} chars)",
+            "worker_output": f"读取成功: {path} ({len(content)} bytes)",
             "file_path": path,
-            "content": content,
+            "content": content[:500],
+            "bytes": len(content),
             "tool": "read_file"
+        }
+
+    elif tool_name == "search" or tool_name == "search_files":
+        pattern = params.get("pattern", "")
+        path = params.get("path", "/tmp")
+        if not pattern:
+            return {"status": "error", "error": "search工具缺少pattern参数"}
+        # 展开 ~
+        path = os.path.expanduser(path)
+        cmd = f"grep -r --include='*.py' --include='*.md' --include='*.json' --include='*.txt' '{pattern}' '{path}' 2>/dev/null | head -30"
+        result = _parse_result(terminal_tool(command=cmd, timeout=30, workdir=None))
+        output = result.get("output", "")
+        count = len(output.strip().split('\n')) if output.strip() else 0
+        return {
+            "status": "success",
+            "worker_output": f"搜索完成: 在{path}中找到{count}处匹配",
+            "matches": output[:2000],
+            "match_count": count,
+            "tool": "search"
         }
 
     elif tool_name == "patch":
