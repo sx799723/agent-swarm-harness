@@ -314,25 +314,29 @@ worker_type 类型说明：
 输出 JSON，不要有其他文字："""
 
         try:
-            # 用curl直调MiniMax API
             import subprocess, json as json_module, os
 
-            # 读取API key（优先从key文件，文件被.gitignore保护）
-            key_file = os.path.join(os.path.dirname(__file__), ".api_key")
-            api_key = ""
-            if os.path.exists(key_file):
-                with open(key_file) as f:
-                    api_key = f.read().strip()
+            # 读取 ~/.hermes/config.yaml 获取 apikey.fun 凭证（跟 Monica 同步）
+            import yaml
+            config_path = os.path.expanduser("~/.hermes/config.yaml")
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+            providers = config.get("providers", {})
+            apikey_provider = providers.get("apikeyfun-claude", {})
+            api_key = apikey_provider.get("api_key", "").strip()
+            base_url = apikey_provider.get("base_url", "https://api.apikey.fun").rstrip("/")
 
             req_body = {
-                "model": "MiniMax-M2.7-highspeed",
+                "model": "claude-opus-4-7",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 2000,
                 "temperature": 0.1,
             }
             curl_cmd = [
                 "curl", "-s", "--max-time", "55",
-                "-X", "POST", "https://api.minimaxi.com/v1/chat/completions",
+                "-X", "POST", f"{base_url}/v1/chat/completions",
                 "-H", f"Authorization: Bearer {api_key}",
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps(req_body, ensure_ascii=False),
@@ -592,25 +596,29 @@ Worker类型：{worker_type or 'generic_worker'}
 只输出JSON："""
 
         try:
-            # 用curl直调MiniMax API
             import subprocess, json as json_module, os
 
-            # 读取API key（优先从key文件，文件被.gitignore保护）
-            key_file = os.path.join(os.path.dirname(__file__), ".api_key")
-            api_key = ""
-            if os.path.exists(key_file):
-                with open(key_file) as f:
-                    api_key = f.read().strip()
+            # 读取 ~/.hermes/config.yaml 获取 apikey.fun 凭证（跟 Monica 同步）
+            import yaml
+            config_path = os.path.expanduser("~/.hermes/config.yaml")
+            config = {}
+            if os.path.exists(config_path):
+                with open(config_path) as f:
+                    config = yaml.safe_load(f) or {}
+            providers = config.get("providers", {})
+            apikey_provider = providers.get("apikeyfun-claude", {})
+            api_key = apikey_provider.get("api_key", "").strip()
+            base_url = apikey_provider.get("base_url", "https://api.apikey.fun").rstrip("/")
 
             req_body = {
-                "model": "MiniMax-M2.7-highspeed",
+                "model": "claude-opus-4-7",
                 "messages": [{"role": "user", "content": prompt}],
                 "max_tokens": 2000,
                 "temperature": 0.1,
             }
             curl_cmd = [
                 "curl", "-s", "--max-time", "55",
-                "-X", "POST", "https://api.minimaxi.com/v1/chat/completions",
+                "-X", "POST", f"{base_url}/v1/chat/completions",
                 "-H", f"Authorization: Bearer {api_key}",
                 "-H", "Content-Type: application/json",
                 "-d", json.dumps(req_body, ensure_ascii=False),
@@ -618,7 +626,7 @@ Worker类型：{worker_type or 'generic_worker'}
             result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
             resp = json.loads(result.stdout.strip())
             text = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            # 过滤掉<think>...</think>思考标签（MiniMax特有）
+            # 过滤掉<think>...</think>思考标签（MiniMax特有，但Claude也有）
             import re
             text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
@@ -627,15 +635,13 @@ Worker类型：{worker_type or 'generic_worker'}
             task_obj = json.loads(text)
             return json.dumps(task_obj, ensure_ascii=False)
         except Exception as e:
-            # LLM失败时显式失败，避免把“解析失败”伪装成成功结果
             safe_error = str(e).replace("'", " ")[:300]
             safe_goal = goal.replace("'", " ")[:300]
             return json.dumps({
                 "tool": "terminal",
-                "params": {"command": f"python3 -c \"import sys; print('LLM解析失败: {safe_goal}; error={safe_error}'); sys.exit(1)\""},
+                "params": {"command": "python3 -c \"import sys; print('LLM解析失败: '+safe_goal+'; error='+safe_error); sys.exit(1)\""},
                 "description": "LLM解析失败，回退到terminal",
             }, ensure_ascii=False)
-
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
         """
         执行拆解后的任务
