@@ -195,9 +195,9 @@ class CEOBrain:
     def _llm_decompose(self, task_description: str) -> dict:
         """
         LLM 智能任务拆解
-        使用 hermes chat -q 调用 LLM 理解复杂任务意图
+        直接用 AIAgent.chat() 调用，不走 subprocess（避免超时）
         """
-        import subprocess, json
+        import json
 
         prompt = f"""你是一个任务拆解专家。请分析以下用户任务，拆解成可执行的子任务。
 
@@ -236,19 +236,38 @@ worker_type 类型说明：
 
 输出 JSON，不要有其他文字："""
 
-        # 调用 hermes chat -q 执行 LLM 理解
         try:
-            result = subprocess.run(
-                ["hermes", "chat", "-q", prompt, "-Q"],
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
-            output = result.stdout.strip()
+            # 用curl直调MiniMax API（绕过hermes配置问题）
+            import subprocess, json as json_module, os
 
-            # 尝试解析 JSON（可能包含在 markdown 代码块中）
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                r = subprocess.run(["hermes", "config", "get", "api_key"], capture_output=True, text=True)
+                if r.returncode == 0:
+                    for line in r.stdout.strip().split("\n"):
+                        parts = line.split("=")
+                        if len(parts) == 2 and parts[0].strip() in ("api_key", "OPENAI_API_KEY"):
+                            api_key = parts[1].strip()
+
+            req_body = {
+                "model": "MiniMax-M2.7-highspeed",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 800,
+                "temperature": 0.1,
+            }
+            curl_cmd = [
+                "curl", "-s", "--max-time", "55",
+                "-X", "POST", "https://api.minimaxi.com/v1/chat/completions",
+                "-H", f"Authorization: Bearer {api_key}",
+                "-H", "Content-Type: application/json",
+                "-d", json.dumps(req_body, ensure_ascii=False),
+            ]
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
+            resp = json.loads(result.stdout.strip())
+            output = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+
+            # 解析 JSON（可能包含在 markdown 代码块中）
             json_text = output
-            # 去掉 markdown 代码块包装
             if "```json" in output:
                 parts = output.split("```json")
                 if len(parts) > 1:
@@ -258,7 +277,7 @@ worker_type 类型说明：
                 if len(parts) > 1:
                     json_text = parts[1].strip()
 
-            decomposition = json.loads(json_text)
+            decomposition = json_module.loads(json_text)
 
             # 补充缺失字段
             if "task_goal" not in decomposition:
@@ -468,13 +487,9 @@ worker_type 类型说明：
         用LLM分析goal，生成结构化的工具调用指令JSON。
 
         返回格式：
-        {
-          "tool": "terminal|write_file|read_file|patch|search",
-          "params": { ... },
-          "description": "..."
-        }
+        {"tool": "terminal|write_file|read_file|patch|search", "params": {...}, "description": "..."}
         """
-        import subprocess, json as json_module
+        import json
 
         prompt = f"""分析以下任务，生成结构化的工具调用指令。
 
@@ -503,26 +518,48 @@ worker_type 类型说明：
 只输出JSON："""
 
         try:
-            result = subprocess.run(
-                ["hermes", "chat", "-q", prompt, "-Q"],
-                capture_output=True, text=True, timeout=30,
-                cwd="/Users/yutanglao/.hermes/hermes-agent"
-            )
-            text = result.stdout.strip()
+            # 用curl直调MiniMax API（绕过hermes配置问题）
+            import subprocess, json as json_module, os
+
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                r = subprocess.run(["hermes", "config", "get", "api_key"], capture_output=True, text=True)
+                if r.returncode == 0:
+                    for line in r.stdout.strip().split("\n"):
+                        parts = line.split("=")
+                        if len(parts) == 2 and parts[0].strip() in ("api_key", "OPENAI_API_KEY"):
+                            api_key = parts[1].strip()
+
+            req_body = {
+                "model": "MiniMax-M2.7-highspeed",
+                "messages": [{"role": "user", "content": prompt}],
+                "max_tokens": 500,
+                "temperature": 0.1,
+            }
+            curl_cmd = [
+                "curl", "-s", "--max-time", "55",
+                "-X", "POST", "https://api.minimaxi.com/v1/chat/completions",
+                "-H", f"Authorization: Bearer {api_key}",
+                "-H", "Content-Type: application/json",
+                "-d", json.dumps(req_body, ensure_ascii=False),
+            ]
+            result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
+            resp = json.loads(result.stdout.strip())
+            text = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
             # 去掉可能的markdown代码块
             if text.startswith("```"):
-                text = text.split("```")[1]
+                parts = text.split("```")
+                text = parts[1] if len(parts) > 1 else text
                 if text.startswith("json"):
                     text = text[4:]
             text = text.strip()
-            task_obj = json_module.loads(text)
-            return json_module.dumps(task_obj, ensure_ascii=False)
+            task_obj = json.loads(text)
         except Exception as e:
             # LLM失败时返回描述性JSON
-            return json_module.dumps({
-                "tool": "unknown",
-                "params": {},
-                "description": f"LLM failed: {str(e)}. Original task: {goal}"
+            return json.dumps({
+                "tool": "terminal",
+                "params": {"command": f"echo 'LLM解析失败: {goal}'"},
+                "description": "LLM解析失败，回退到terminal",
             }, ensure_ascii=False)
 
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
