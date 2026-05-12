@@ -635,11 +635,12 @@ Worker类型：{worker_type or 'generic_worker'}
             task_obj = json.loads(text)
             return json.dumps(task_obj, ensure_ascii=False)
         except Exception as e:
-            safe_error = str(e).replace("'", " ")[:300]
-            safe_goal = goal.replace("'", " ")[:300]
+            safe_error = str(e).replace('"', "'").replace("'", "")[:300]
+            safe_goal = goal.replace('"', "'").replace("'", "")[:300]
+            cmd_str = "python3 -c \"import sys; print('LLM解析失败: " + safe_goal + "; error: " + safe_error + "'); sys.exit(1)\""
             return json.dumps({
                 "tool": "terminal",
-                "params": {"command": "python3 -c \"import sys; print('LLM解析失败: '+safe_goal+'; error='+safe_error); sys.exit(1)\""},
+                "params": {"command": cmd_str},
                 "description": "LLM解析失败，回退到terminal",
             }, ensure_ascii=False)
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:

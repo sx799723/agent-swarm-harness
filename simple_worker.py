@@ -9,7 +9,7 @@ Simple Worker - 直接调用Hermes工具的轻量执行器
 新架构（v2）：
 - CEO用LLM生成【任务指令】JSON块
 - Simple Worker直接解析JSON并执行，无需正则猜测
-- 支持：terminal, write_file, read_file, patch, search
+- 支持：terminal, write_file, read_file, patch, search, web_search, web_extract
 
 Usage:
     python3 simple_worker.py '{"goal": "...", "context": {...}}'
@@ -20,6 +20,8 @@ import json
 import traceback
 import os
 import re
+import requests
+import html as html_module
 
 # 添加Hermes路径
 sys.path.insert(0, '/Users/yutanglao/.hermes/hermes-agent')
@@ -36,6 +38,59 @@ def _get_tools():
     from tools.file_tools import write_file_tool, read_file_tool, patch_tool, search_tool
     from tools.terminal_tool import terminal_tool
     return write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool
+
+
+def ddg_search(query: str, limit: int = 5) -> str:
+    """
+    用 DuckDuckGo HTML API 做无认证搜索（直接调，不需要ddgs包）。
+    返回格式化的搜索结果文本。
+    """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    try:
+        url = f"https://html.duckduckgo.com/html/?q={requests.utils.quote(query)}"
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        text = resp.text
+        results = []
+        # DuckDuckGo HTML 结果格式：<a class="result__a" href="URL">Title</a>...<a class="result__snippet" href="...">Snippet</a>
+        for match in re.finditer(r'<a class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', text, re.DOTALL):
+            href = match.group(1)
+            title_raw = match.group(2)
+            title = html_module.unescape(re.sub(r'<[^>]+>', '', title_raw))
+            results.append(f"标题: {title}\n链接: {href}")
+        if not results:
+            return f"搜索「{query}」无结果"
+        return f"搜索「{query}」，共{len(results)}条结果:\n\n" + "\n\n".join(results[:limit])
+    except Exception as e:
+        return f"DuckDuckGo搜索失败: {e}"
+
+
+def ddg_extract(url: str) -> str:
+    """用 requests 抓取网页正文（简单实现）。"""
+    try:
+        resp = requests.get(url, headers={
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        }, timeout=15)
+        resp.raise_for_status()
+        text = resp.text
+        # 移除 script/style
+        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL)
+        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL)
+        # 提取 body
+        body_match = re.search(r'<body[^>]*>(.*)', text, re.DOTALL)
+        if body_match:
+            text = body_match.group(1)
+        # 去掉所有标签
+        text = re.sub(r'<[^>]+>', ' ', text)
+        # 还原 HTML 实体
+        text = html_module.unescape(text)
+        # 合并空白
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:8000]
+    except Exception as e:
+        return f"抓取失败: {e}"
 
 
 def _extract_task_instruction(goal: str) -> dict:
@@ -95,7 +150,7 @@ def execute_goal(goal: str, context) -> dict:
     output_dir = context.get("output_dir", workspace)
     os.makedirs(output_dir, exist_ok=True)
 
-    write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool = _get_tools()
+    write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, web_search_tool, web_extract_tool = _get_tools()
 
     # ═══════════════════════════════════════════════════════════
     # 工具路由（基于LLM生成的【任务指令】JSON）
@@ -214,18 +269,36 @@ print('Patched 1 occurrence')
             "tool": "patch"
         }
 
-    elif tool_name == "search":
-        pattern = params.get("pattern", "")
-        path = params.get("path", "/tmp")
-        if not pattern:
-            return {"status": "error", "error": "search工具缺少pattern参数"}
-        cmd = f"grep -r '{pattern}' '{path}' 2>/dev/null | head -20"
-        result = _parse_result(terminal_tool(command=cmd, timeout=30, workdir=None))
-        return {
-            "status": "success",
-            "worker_output": result.get("output", "未找到匹配"),
-            "tool": "search"
-        }
+    elif tool_name == "web_search":
+        query = params.get("query", params.get("q", ""))
+        limit = params.get("limit", 5)
+        if not query:
+            return {"status": "error", "error": "web_search工具缺少query参数"}
+        try:
+            result = ddg_search(query=query, limit=limit)
+            return {
+                "status": "success",
+                "worker_output": result[:5000] if result else "无结果",
+                "results": result,
+                "tool": "web_search"
+            }
+        except Exception as e:
+            return {"status": "error", "error": f"web_search失败: {e}"}
+
+    elif tool_name == "web_extract":
+        url = params.get("url", "")
+        if not url:
+            return {"status": "error", "error": "web_extract工具缺少url参数"}
+        try:
+            result = ddg_extract(url=url)
+            return {
+                "status": "success",
+                "worker_output": result[:5000] if result else "无内容",
+                "content": result,
+                "tool": "web_extract"
+            }
+        except Exception as e:
+            return {"status": "error", "error": f"web_extract失败: {e}"}
 
     else:
         return {
