@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-05-12T04:32:45.048439",
+  "uptime_seconds": 8e-06,
+  "checks": {
+    "core_modules": {
+      "worker_pool": {
+        "status": "error",
+        "detail": "No module named 'worker_pool'"
+      },
+      "session_store": {
+        "status": "error",
+        "detail": "No module named 'session_store'"
+      },
+      "ceo_brain": {
+        "status": "error",
+        "detail": "No module named 'ceo_brain'"
+      },
+      "harness": {
+        "status": "error",
+        "detail": "No module named 'harness'"
+      }
+    },
+    "file_health": {
+      "swarm_db": {
+        "status": "missing",
+        "path": "/Users/yutanglao/.hermes/agent-swarm/workspace/d68bbe95-da0e-4510-82f2-009ede883d46/subtask-95950a/swarm.db"
+      },
+      "config_py": {
+        "status": "missing",
+        "path": "/Users/yutanglao/.hermes/agent-swarm/workspace/d68bbe95-da0e-4510-82f2-009ede883d46/subtask-95950a/config.py"
+      }
+    },
+    "runtime": {
+      "worker_pool_spawn": {
+        "status": "error",
+        "detail": "No module named 'worker_pool'"
+      },
+      "session_store_init": {
+        "status": "error",
+        "detail": "No module named 'session_store'"
+      },
+      "ceo_brain_load": {
+        "status": "error",
+        "detail": "No module named 'ceo_brain'"
+      }
+    },
+    "exception_history_count": 0
+  },
+  "overall": "degraded (7 issue(s))"
+}

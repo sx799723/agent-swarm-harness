@@ -42,14 +42,16 @@ class AgentSwarmHarness:
     5. 汇总结果
     """
 
-    def __init__(self, max_concurrent: int = 3, max_retries: int = 3):
+    def __init__(self, max_concurrent: int = 7, max_retries: int = 3, model: str = None):
         """
         Args:
             max_concurrent: 最大并发 Worker 数
             max_retries: 最大重试次数
+            model: 可选的模型名称（传递给 WorkerPool，目前为预留参数）
         """
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
+        self.model = model
         self._pool = get_worker_pool()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent)
 
@@ -104,7 +106,9 @@ class AgentSwarmHarness:
                 worker_type=worker_type,
                 goal=goal,
                 context=context,
-                max_retries=max_retries
+                max_retries=max_retries,
+                timeout=w.get("timeout", 7200),
+                priority=w.get("priority", 0),
             )
             assign_worker_to_task(task_id, worker_id)
             worker_ids.append(worker_id)
@@ -129,7 +133,9 @@ class AgentSwarmHarness:
             worker_type=worker["worker_type"],
             goal=worker["goal"],
             context=worker.get("context"),
-            max_retries=worker.get("max_retries"),
+            max_retries=worker.get("max_retries", self.max_retries),
+            timeout_seconds=worker.get("timeout", 7200),
+            priority=worker.get("priority", 0),
         )
 
         # 更新状态
@@ -144,33 +150,85 @@ class AgentSwarmHarness:
         """
         执行所有 Workers
 
-        Args:
-            worker_ids: 要执行的 worker ID 列表
-            parallel: 是否并行执行（True = 并发，False = 顺序）
+        True 并发：
+          1. 按优先级排序（高→低）
+          2. 所有 worker 同时 spawn（异步，不等待）
+          3. 按优先级顺序 wait_for_result 全部完成
+
+        顺序执行：
+          1. spawn 一个
+          2. wait_for_result 等待完成
+          3. 重复
 
         Returns: {worker_id: WorkerResult, ...}
         """
         results = {}
 
+        # 按优先级排序（高优先级在前），保持顺序稳定性
+        def get_priority(wid: str) -> int:
+            w = get_worker(wid)
+            return w.get("priority", 0) if w else 0
+
+        sorted_ids = sorted(worker_ids, key=get_priority, reverse=True)
+
         if parallel:
-            # 并行执行
-            futures = {
-                self._executor.submit(self.execute_worker, wid): wid
-                for wid in worker_ids
-            }
-            for future in concurrent.futures.as_completed(futures):
-                wid = futures[future]
-                try:
-                    results[wid] = future.result()
-                except Exception as e:
-                    results[wid] = WorkerResult(worker_id=wid, status="failed", error=str(e))
+            # ─── 真正并发 ───
+            # Phase 1: 同时 spawn 所有 workers（非阻塞，各自独立线程监控）
+            spawned = []
+            for wid in sorted_ids:
+                worker = get_worker(wid)
+                if not worker:
+                    continue
+                update_worker_status(wid, "running")
+                self._pool.spawn(
+                    worker_id=wid,
+                    worker_type=worker["worker_type"],
+                    goal=worker["goal"],
+                    context=worker.get("context"),
+                    max_retries=worker.get("max_retries", self.max_retries),
+                    timeout_seconds=worker.get("timeout", 7200),
+                    priority=worker.get("priority", 0),
+                )
+                spawned.append(wid)
+
+            # Phase 2: 等待所有 workers 完成（所有 worker 同时运行，按完成顺序收集结果）
+            pending = set(spawned)
+            while pending:
+                # 每次轮询所有 pending worker，把已完成的移出
+                # 使用 list(pending) 快照避免迭代中修改 set 导致跳项
+                completed_this_round = []
+                for wid in list(pending):
+                    result = self._pool.get_result(wid)
+                    if result is not None:
+                        update_worker_status(wid, result.status, result=result.result, error=result.error)
+                        results[wid] = result
+                        completed_this_round.append(wid)
+                # 在循环外统一移除，避免在迭代中修改 set
+                for wid in completed_this_round:
+                    pending.discard(wid)
+                if pending:
+                    time.sleep(0.2)  # 缩短轮询间隔提升响应速度
+
         else:
-            # 顺序执行
-            for wid in worker_ids:
-                try:
-                    results[wid] = self.execute_worker(wid)
-                except Exception as e:
-                    results[wid] = WorkerResult(worker_id=wid, status="failed", error=str(e))
+            # ─── 顺序执行 ───
+            for wid in sorted_ids:
+                worker = get_worker(wid)
+                if not worker:
+                    continue
+                update_worker_status(wid, "running")
+                self._pool.spawn(
+                    worker_id=wid,
+                    worker_type=worker["worker_type"],
+                    goal=worker["goal"],
+                    context=worker.get("context"),
+                    max_retries=worker.get("max_retries", self.max_retries),
+                    timeout_seconds=worker.get("timeout", 7200),
+                    priority=worker.get("priority", 0),
+                )
+                result = self._pool.wait_for_result(wid)
+                if result:
+                    update_worker_status(wid, result.status, result=result.result, error=result.error)
+                    results[wid] = result
 
         return results
 
@@ -192,9 +250,9 @@ class AgentSwarmHarness:
                         result=worker.get("result"),
                         error=worker.get("error"),
                     )
-                    pending.remove(wid)
+                    pending.discard(wid)
                 elif not worker:
-                    pending.remove(wid)
+                    pending.discard(wid)
 
             if pending:
                 time.sleep(poll_interval)

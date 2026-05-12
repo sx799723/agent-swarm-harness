@@ -42,7 +42,7 @@ class AgentSwarmHarness:
     5. 汇总结果
     """
 
-    def __init__(self, max_concurrent: int = 3, max_retries: int = 3):
+    def __init__(self, max_concurrent: int = 7, max_retries: int = 3):
         """
         Args:
             max_concurrent: 最大并发 Worker 数
@@ -104,7 +104,9 @@ class AgentSwarmHarness:
                 worker_type=worker_type,
                 goal=goal,
                 context=context,
-                max_retries=max_retries
+                max_retries=max_retries,
+                timeout=w.get("timeout", 7200),
+                priority=w.get("priority", 0),
             )
             assign_worker_to_task(task_id, worker_id)
             worker_ids.append(worker_id)
@@ -129,7 +131,9 @@ class AgentSwarmHarness:
             worker_type=worker["worker_type"],
             goal=worker["goal"],
             context=worker.get("context"),
-            max_retries=worker.get("max_retries"),
+            max_retries=worker.get("max_retries", self.max_retries),
+            timeout=worker.get("timeout", 7200),
+            priority=worker.get("priority", 0),
         )
 
         # 更新状态
@@ -144,33 +148,65 @@ class AgentSwarmHarness:
         """
         执行所有 Workers
 
-        Args:
-            worker_ids: 要执行的 worker ID 列表
-            parallel: 是否并行执行（True = 并发，False = 顺序）
+        True 并发：
+          1. 先 spawn 全部（异步，不等待）
+          2. 然后并发地 wait_for_result 全部
+
+        顺序执行：
+          1. spawn 一个
+          2. wait_for_result 等待完成
+          3. 重复
 
         Returns: {worker_id: WorkerResult, ...}
         """
         results = {}
 
         if parallel:
-            # 并行执行
-            futures = {
-                self._executor.submit(self.execute_worker, wid): wid
-                for wid in worker_ids
-            }
-            for future in concurrent.futures.as_completed(futures):
-                wid = futures[future]
-                try:
-                    results[wid] = future.result()
-                except Exception as e:
-                    results[wid] = WorkerResult(worker_id=wid, status="failed", error=str(e))
-        else:
-            # 顺序执行
+            # ─── True 并发 ───
+            # 所有 worker 同时启动，互不等待
             for wid in worker_ids:
-                try:
-                    results[wid] = self.execute_worker(wid)
-                except Exception as e:
-                    results[wid] = WorkerResult(worker_id=wid, status="failed", error=str(e))
+                worker = get_worker(wid)
+                if not worker:
+                    continue
+                update_worker_status(wid, "running")
+                self._pool.spawn(
+                    worker_id=wid,
+                    worker_type=worker["worker_type"],
+                    goal=worker["goal"],
+                    context=worker.get("context"),
+                    max_retries=worker.get("max_retries"),
+                )
+
+            # 等待全部完成（并发轮询）
+            pending = set(worker_ids)
+            while pending:
+                for wid in list(pending):
+                    result = self._pool.get_result(wid)
+                    if result is not None:
+                        update_worker_status(wid, result.status, result=result.result, error=result.error)
+                        results[wid] = result
+                        pending.remove(wid)
+                if pending:
+                    time.sleep(1.0)  # 不要高频轮询
+
+        else:
+            # ─── 顺序执行 ───
+            for wid in worker_ids:
+                worker = get_worker(wid)
+                if not worker:
+                    continue
+                update_worker_status(wid, "running")
+                self._pool.spawn(
+                    worker_id=wid,
+                    worker_type=worker["worker_type"],
+                    goal=worker["goal"],
+                    context=worker.get("context"),
+                    max_retries=worker.get("max_retries"),
+                )
+                result = self._pool.wait_for_result(wid)
+                if result:
+                    update_worker_status(wid, result.status, result=result.result, error=result.error)
+                    results[wid] = result
 
         return results
 
@@ -192,9 +228,9 @@ class AgentSwarmHarness:
                         result=worker.get("result"),
                         error=worker.get("error"),
                     )
-                    pending.remove(wid)
+                    pending.discard(wid)
                 elif not worker:
-                    pending.remove(wid)
+                    pending.discard(wid)
 
             if pending:
                 time.sleep(poll_interval)
