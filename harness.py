@@ -26,6 +26,8 @@ from session_store import (
     assign_worker_to_task,
     is_all_workers_done,
     get_task_stats,
+    get_db,
+    harness_event_log,
 )
 from worker_pool import WorkerPool, get_worker_pool, WorkerResult
 
@@ -113,6 +115,14 @@ class AgentSwarmHarness:
             assign_worker_to_task(task_id, worker_id)
             worker_ids.append(worker_id)
 
+            # 记录 dispatch 事件
+            conn = get_db()
+            harness_event_log(conn, "dispatch", task_id, worker_id, {
+                "worker_type": worker_type,
+                "goal": goal[:100],
+            })
+            conn.close()
+
         print(f"[Harness] Dispatched {len(worker_ids)} workers for task {task_id}")
         return worker_ids
 
@@ -146,7 +156,7 @@ class AgentSwarmHarness:
 
         return result
 
-    def execute_all(self, worker_ids: list[str], parallel: bool = True) -> dict[str, WorkerResult]:
+    def execute_all(self, task_id: str, worker_ids: list[str], parallel: bool = True) -> dict[str, WorkerResult]:
         """
         执行所有 Workers
 
@@ -180,6 +190,7 @@ class AgentSwarmHarness:
                 if not worker:
                     continue
                 update_worker_status(wid, "running")
+                # 记录 execute 事件（在 run() 方法中统一记录，这里不重复）
                 self._pool.spawn(
                     worker_id=wid,
                     worker_type=worker["worker_type"],
@@ -201,6 +212,13 @@ class AgentSwarmHarness:
                     result = self._pool.get_result(wid)
                     if result is not None:
                         update_worker_status(wid, result.status, result=result.result, error=result.error)
+                        # 记录 complete 事件
+                        conn = get_db()
+                        harness_event_log(conn, "complete", worker["task_id"], wid, {
+                            "status": result.status,
+                            "error": result.error,
+                        })
+                        conn.close()
                         results[wid] = result
                         completed_this_round.append(wid)
                 # 在循环外统一移除，避免在迭代中修改 set
@@ -216,6 +234,7 @@ class AgentSwarmHarness:
                 if not worker:
                     continue
                 update_worker_status(wid, "running")
+                # 记录 execute 事件（在 run() 方法中统一记录，这里不重复）
                 self._pool.spawn(
                     worker_id=wid,
                     worker_type=worker["worker_type"],
@@ -228,6 +247,13 @@ class AgentSwarmHarness:
                 result = self._pool.wait_for_result(wid)
                 if result:
                     update_worker_status(wid, result.status, result=result.result, error=result.error)
+                    # 记录 complete 事件
+                    conn = get_db()
+                    harness_event_log(conn, "complete", task_id, wid, {
+                        "status": result.status,
+                        "error": result.error,
+                    })
+                    conn.close()
                     results[wid] = result
 
         return results
@@ -331,6 +357,16 @@ class AgentSwarmHarness:
         # 汇总结果写入 task
         aggregated = self.aggregate_results(results)
         update_task_status(task_id, task_status, result=aggregated)
+
+        # 记录 aggregate 事件
+        conn = get_db()
+        harness_event_log(conn, "aggregate", task_id, None, {
+            "task_status": task_status,
+            "worker_count": len(results),
+            "completed": sum(1 for r in results.values() if r.status == "completed"),
+            "failed": sum(1 for r in results.values() if r.status == "failed"),
+        })
+        conn.close()
 
         return {
             "task_id": task_id,
