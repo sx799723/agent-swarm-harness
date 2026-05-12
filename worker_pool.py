@@ -175,6 +175,17 @@ class WorkerPool:
         # 签名: Callable[[str], None] — 参数为 (worker_id, raw_log_line)
         self._log_sink: Optional[Callable[[str, str], None]] = None
 
+    def _worker_pool_event_log(self, event: str, worker_id: str, data: dict = None):
+        """内部事件日志记录，输出统一格式供 Harness 采集"""
+        record = {
+            "event": event,
+            "worker_id": worker_id,
+            "ts": time.time(),
+        }
+        if data:
+            record["data"] = data
+        print(f"[WORKER_POOL_EVENT] {json.dumps(record, ensure_ascii=False)}")
+
     # ─────────────────────────────────────────
     # 全局日志接收器 API
     # ─────────────────────────────────────────
@@ -238,6 +249,12 @@ class WorkerPool:
         print(f"[WorkerPool] Spawning {worker_id} (type={worker_type}, priority={priority})")
         print(f"[WorkerPool] Goal: {goal[:80]}...")
 
+        self._worker_pool_event_log("spawn", worker_id, {
+            "worker_type": worker_type,
+            "priority": priority,
+            "timeout_seconds": timeout_seconds,
+        })
+
         # 启动子进程（使用 PIPE 以便实时读取 stdout/stderr）
         proc = subprocess.Popen(
             cmd,
@@ -293,6 +310,14 @@ class WorkerPool:
             worker = self._workers[worker_id]
             proc = worker.proc
             log_sink = worker.log_sink
+
+        # 记录 start 事件（进程已启动）
+        w = self.get_worker(worker_id)
+        task_id = w.goal[:40] if w else worker_id
+        self._worker_pool_event_log("start", worker_id, {
+            "task_id": task_id,
+            "timeout_seconds": timeout,
+        })
 
         stdout_lines = []
         stderr_lines = []
@@ -359,18 +384,51 @@ class WorkerPool:
             proc.kill()
             stdout_text = "\n".join(stdout_lines)
             stderr_text = str(e)
+            # 超时不走下面的 exit-code 判断，直接走独立分支
+            self._worker_pool_event_log("timeout", worker_id, {
+                "task_id": task_id,
+                "error": stderr_text,
+            })
+            result = WorkerResult(
+                worker_id=worker_id,
+                status="timeout",
+                result=stdout_text if stdout_text.strip() else None,
+                error=stderr_text.strip(),
+                logs=logs,
+                progress=progress,
+                session_id=worker_id,
+                completed_at=time.time(),
+            )
+            self._finalize_and_callback(worker_id, result, stdout_lines, stderr_lines)
+            print(f"[WorkerPool] {worker_id} finished with status=timeout")
+            return
 
         except Exception as e:
+            proc.kill()
             stdout_text = "\n".join(stdout_lines)
             stderr_text = str(e)
+            # 异常不走下面的 exit-code 判断
+            self._worker_pool_event_log("fail", worker_id, {
+                "task_id": task_id,
+                "error": stderr_text,
+            })
+            result = WorkerResult(
+                worker_id=worker_id,
+                status="failed",
+                result=stdout_text if stdout_text.strip() else None,
+                error=stderr_text,
+                logs=logs,
+                progress=progress,
+                session_id=worker_id,
+                completed_at=time.time(),
+            )
+            self._finalize_and_callback(worker_id, result, stdout_lines, stderr_lines)
+            print(f"[WorkerPool] {worker_id} finished with status=failed")
+            return
 
-        # Determine final status based on exit code
+        # ── 正常退出：判断 exit code ──
         proc_state = proc.poll()
-        if proc_state is None:
-            # Process still running (shouldn't happen after loop break), treat as unknown
-            final_status = "failed"
-            final_error = "Process still running after monitor loop exit"
-        elif proc_state == 0:
+        if proc_state == 0:
             final_status = "completed"
             final_error = None
         else:
@@ -382,6 +440,10 @@ class WorkerPool:
         )
 
         if final_status == "completed":
+            self._worker_pool_event_log("complete", worker_id, {
+                "task_id": task_id,
+                "result_preview": final_output[:80] if final_output else None,
+            })
             result = WorkerResult(
                 worker_id=worker_id,
                 status="completed",
@@ -392,6 +454,10 @@ class WorkerPool:
                 completed_at=time.time(),
             )
         else:
+            self._worker_pool_event_log("fail", worker_id, {
+                "task_id": task_id,
+                "error": final_error,
+            })
             result = WorkerResult(
                 worker_id=worker_id,
                 status="failed",
@@ -403,7 +469,12 @@ class WorkerPool:
                 completed_at=time.time(),
             )
 
-        # 写入结果，调用回调
+        self._finalize_and_callback(worker_id, result, stdout_lines, stderr_lines)
+        print(f"[WorkerPool] {worker_id} finished with status={result.status}")
+
+    def _finalize_and_callback(self, worker_id: str, result: WorkerResult,
+                                stdout_lines: list, stderr_lines: list):
+        """写入结果并调用回调（供 _monitor 和 kill 复用）"""
         with self._lock:
             if worker_id in self._workers:
                 self._workers[worker_id].result = result
@@ -416,8 +487,6 @@ class WorkerPool:
                         callback(result)
                     except Exception:
                         pass  # 回调出错不影响主流程
-
-        print(f"[WorkerPool] {worker_id} finished with status={result.status}")
 
     def _emit_log(self, log_sink, worker_id: str, raw_line: str):
         """解析单行并通过 log_sink 实时推送"""
@@ -468,20 +537,30 @@ class WorkerPool:
                 return
             proc = self._workers[worker_id].proc
 
+        # 记录 cancelled 事件
+        w = self.get_worker(worker_id)
+        task_id = w.goal[:40] if w else worker_id
+        self._worker_pool_event_log("cancelled", worker_id, {
+            "task_id": task_id,
+            "error": "被手动终止",
+        })
+
         try:
             proc.terminate()
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
 
+        result = WorkerResult(
+            worker_id=worker_id,
+            status="cancelled",
+            error="被手动终止",
+            completed_at=time.time(),
+        )
         with self._lock:
-            self._workers[worker_id].result = WorkerResult(
-                worker_id=worker_id,
-                status="cancelled",
-                error="被手动终止",
-                completed_at=time.time(),
-            )
             self._workers[worker_id].status = "cancelled"
+        # 注意：不再调用 _finalize_and_callback，避免与 _monitor 竞争
+        # kill() 手动设置 result 和 status，_monitor 会在下一次轮询中发现状态已变
         print(f"[WorkerPool] {worker_id} killed")
 
     def kill_all(self):

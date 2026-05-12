@@ -332,8 +332,25 @@ class AgentSwarmHarness:
         # 1. 分发 workers
         worker_ids = self.dispatch(task_id, workers)
 
+        # 记录 dispatch 事件
+        conn = get_db()
+        harness_event_log(conn, "dispatch", task_id, None, {
+            "worker_count": len(worker_ids),
+            "worker_types": [get_worker(wid).get("worker_type", "unknown") for wid in worker_ids if get_worker(wid)],
+            "parallel": parallel,
+        })
+        conn.close()
+
         # 2. 执行
         results = self.execute_all(worker_ids, parallel=parallel)
+
+        # 记录 execute 事件
+        conn = get_db()
+        harness_event_log(conn, "execute", task_id, None, {
+            "completed": sum(1 for r in results.values() if r.status == "completed"),
+            "failed": sum(1 for r in results.values() if r.status == "failed"),
+        })
+        conn.close()
 
         # 3. 自动重试
         if auto_retry:
