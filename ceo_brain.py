@@ -339,6 +339,7 @@ worker_type 类型说明：
                 "-X", "POST", f"{base_url}/v1/chat/completions",
                 "-H", f"Authorization: Bearer {api_key}",
                 "-H", "Content-Type: application/json",
+                "-H", "Accept: application/json",
                 "-d", json.dumps(req_body, ensure_ascii=False),
             ]
             result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
@@ -621,12 +622,13 @@ Worker类型：{worker_type or 'generic_worker'}
                 "-X", "POST", f"{base_url}/v1/chat/completions",
                 "-H", f"Authorization: Bearer {api_key}",
                 "-H", "Content-Type: application/json",
+                "-H", "Accept: application/json",
                 "-d", json.dumps(req_body, ensure_ascii=False),
             ]
             result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
             resp = json.loads(result.stdout.strip())
             text = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
-            # 过滤掉<think>...</think>思考标签（MiniMax特有，但Claude也有）
+            # 过滤掉<think>...</think>思考标签（Claude也有）
             import re
             text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
