@@ -124,8 +124,14 @@ def execute_goal(goal: str, context) -> dict:
         content = params.get("content", "")
         if not path:
             return {"status": "error", "error": "write_file工具缺少path参数"}
-        escaped_content = content.replace("'", "'\\''")
-        result = _parse_result(terminal_tool(command=f"echo '{escaped_content}' > '{path}'", timeout=30, workdir=None))
+        if content == "" and not params.get("allow_empty", False):
+            return {"status": "error", "error": f"write_file拒绝写入空内容: {path}"}
+        path = os.path.expanduser(path)
+        if not os.path.isabs(path):
+            path = os.path.join(output_dir, path)
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
         size = os.path.getsize(path) if os.path.exists(path) else 0
         return {
             "status": "success",

@@ -101,6 +101,25 @@ WORKER_DEFAULT_SKILLS = {
     "generic_worker": "find-skills-skill/find-skills",
 }
 
+# Worker 类型定义（测试套件和外部调用方依赖此常量）。
+# 以 WORKER_DEFAULT_SKILLS 为单一来源生成，避免 root 源码与 package/src 版本漂移。
+WORKER_TYPES = {
+    worker_type: {
+        "description": {
+            "code_worker": "执行编码任务（前端/后端/脚本/数据库等）",
+            "ppt_worker": "执行PPT/演示文稿制作",
+            "video_worker": "执行视频剪辑、配音、导出",
+            "ui_worker": "执行UI设计、图标、海报",
+            "qa_worker": "执行测试、验证、质量检查",
+            "doc_worker": "执行文档处理、数据整理、表格",
+            "research_worker": "执行调研、搜索、信息整理",
+            "generic_worker": "通用任务执行",
+        }.get(worker_type, "通用任务执行"),
+        "default_skill": skill,
+    }
+    for worker_type, skill in WORKER_DEFAULT_SKILLS.items()
+}
+
 
 def select_skill_for_task(worker_type: str, goal: str) -> list[str]:
     """
@@ -140,6 +159,64 @@ def build_skill_instructions(skills: list[str]) -> str:
         f"调用方式：hermes chat -s {skill_str} -q \"你的任务\"\n"
         f"{'='*60}\n"
     )
+
+
+def _extract_json_object(text: str) -> str:
+    """从 LLM 输出中提取第一个可 json.loads 的平衡 JSON 对象。"""
+    if not text:
+        raise json.JSONDecodeError("empty LLM output", text, 0)
+
+    text = text.strip()
+    if "```json" in text:
+        text = text.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) > 1:
+            text = parts[1].strip()
+
+    last_error = None
+    search_pos = 0
+    while True:
+        start = text.find("{", search_pos)
+        if start < 0:
+            break
+
+        depth = 0
+        in_string = False
+        escape = False
+        for idx in range(start, len(text)):
+            ch = text[idx]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\" and in_string:
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:idx + 1]
+                    try:
+                        json.loads(candidate)
+                        return candidate
+                    except json.JSONDecodeError as e:
+                        last_error = e
+                        search_pos = start + 1
+                        break
+        else:
+            last_error = json.JSONDecodeError("unterminated JSON object", text, start)
+            search_pos = start + 1
+
+    if last_error:
+        raise last_error
+    raise json.JSONDecodeError("no JSON object found", text, 0)
 
 
 # ─────────────────────────────────────────
@@ -250,7 +327,7 @@ worker_type 类型说明：
             req_body = {
                 "model": "MiniMax-M2.7-highspeed",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 800,
+                "max_tokens": 2000,
                 "temperature": 0.1,
             }
             curl_cmd = [
@@ -264,17 +341,8 @@ worker_type 类型说明：
             resp = json.loads(result.stdout.strip())
             output = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
 
-            # 解析 JSON（可能包含在 markdown 代码块中）
-            json_text = output
-            if "```json" in output:
-                parts = output.split("```json")
-                if len(parts) > 1:
-                    json_text = parts[1].split("```")[0].strip()
-            elif "```" in output:
-                parts = output.split("```")
-                if len(parts) > 1:
-                    json_text = parts[1].strip()
-
+            # 解析 JSON：兼容 <think> 前缀、Markdown 代码块和正文夹杂说明
+            json_text = _extract_json_object(output)
             decomposition = json_module.loads(json_text)
 
             # 补充缺失字段
@@ -446,7 +514,7 @@ worker_type 类型说明：
                 lines.append("")
 
         # ─── LLM生成结构化任务指令 ───
-        task_instruction = self._llm_make_task_instruction(goal, worker_type)
+        task_instruction = self._llm_make_task_instruction(goal, worker_type, context)
         lines.append("【任务指令】")
         lines.append(task_instruction)
         lines.append("---")
@@ -480,7 +548,7 @@ worker_type 类型说明：
 
         return "\n".join(lines)
 
-    def _llm_make_task_instruction(self, goal: str, worker_type: str = None) -> str:
+    def _llm_make_task_instruction(self, goal: str, worker_type: str = None, context: dict = None) -> str:
         """
         用LLM分析goal，生成结构化的工具调用指令JSON。
 
@@ -489,14 +557,22 @@ worker_type 类型说明：
         """
         import json
 
+        context = context or {}
+        output_dir = context.get("output_dir", PROJECT_ROOT)
+
         prompt = f"""分析以下任务，生成结构化的工具调用指令。
 
 任务：{goal}
+
+Worker类型：{worker_type or 'generic_worker'}
+产出目录：{output_dir}
 
 要求：
 1. 分析任务意图，判断需要什么工具
 2. 提取精确的参数（路径、内容、命令等）
 3. 只输出JSON，不要其他内容
+4. 如果需要创建/写入文件，path 必须位于“产出目录”下，且 content 不能为空
+5. 如果无法生成有效可执行指令，返回 terminal 工具并使用非零退出码，不能伪装成功
 
 工具选择规则：
 - 如果任务包含"修改"、"替换"、"改名为"、"把...改成..."、"更新"：用 patch 工具
@@ -529,7 +605,7 @@ worker_type 类型说明：
             req_body = {
                 "model": "MiniMax-M2.7-highspeed",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 500,
+                "max_tokens": 2000,
                 "temperature": 0.1,
             }
             curl_cmd = [
@@ -546,20 +622,17 @@ worker_type 类型说明：
             import re
             text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-            # 去掉可能的markdown代码块
-            if text.startswith("```"):
-                parts = text.split("```")
-                text = parts[1] if len(parts) > 1 else text
-                if text.startswith("json"):
-                    text = text[4:]
-            text = text.strip()
+            # 提取 JSON：兼容 <think> 前缀、Markdown 代码块和正文夹杂说明
+            text = _extract_json_object(text)
             task_obj = json.loads(text)
             return json.dumps(task_obj, ensure_ascii=False)
         except Exception as e:
-            # LLM失败时返回描述性JSON
+            # LLM失败时显式失败，避免把“解析失败”伪装成成功结果
+            safe_error = str(e).replace("'", " ")[:300]
+            safe_goal = goal.replace("'", " ")[:300]
             return json.dumps({
                 "tool": "terminal",
-                "params": {"command": f"echo 'LLM解析失败: {goal}'"},
+                "params": {"command": f"python3 -c \"import sys; print('LLM解析失败: {safe_goal}; error={safe_error}'); sys.exit(1)\""},
                 "description": "LLM解析失败，回退到terminal",
             }, ensure_ascii=False)
 
