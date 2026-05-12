@@ -129,6 +129,7 @@ class Worker:
     stdout_lines: list = dataclasses.field(default_factory=list)
     stderr_lines: list = dataclasses.field(default_factory=list)
     proc: Optional[Any] = dataclasses.field(default=None, repr=False)
+    max_retries: int = 3
 
 
 # ─────────────────────────────────────────
@@ -308,12 +309,8 @@ class WorkerPool:
 
                 # 用 select 做非阻塞检查：stdout/stderr 是否有数据可读
                 rlist, _, xlist = select.select(
-                    [proc.stdout, proc.stderr], [], [], min(0.5, remaining)
+                    [proc.stdout, proc.stderr], [], [], min(0.5, max(0.0, remaining))
                 )
-                timed_out = (time.time() >= deadline)
-
-                if timed_out:
-                    raise TimeoutError(f"执行超时（{timeout}s）")
 
                 if xlist:
                     pass  # 异常条件，忽略
@@ -367,16 +364,24 @@ class WorkerPool:
             stdout_text = "\n".join(stdout_lines)
             stderr_text = str(e)
 
+        # Determine final status based on exit code
+        proc_state = proc.poll()
+        if proc_state is None:
+            # Process still running (shouldn't happen after loop break), treat as unknown
+            final_status = "failed"
+            final_error = "Process still running after monitor loop exit"
+        elif proc_state == 0:
+            final_status = "completed"
+            final_error = None
+        else:
+            final_status = "failed"
+            final_error = stderr_text.strip() or f"Exit code: {proc_state}"
+
         logs, progress, final_output = parse_worker_output(
             stdout_text.encode(), stderr_text.encode()
         )
 
-        with self._lock:
-            if worker_id not in self._workers:
-                return
-            proc_state = self._workers[worker_id].proc.poll()
-
-        if proc_state == 0 or proc_state is None:
+        if final_status == "completed":
             result = WorkerResult(
                 worker_id=worker_id,
                 status="completed",
@@ -391,7 +396,7 @@ class WorkerPool:
                 worker_id=worker_id,
                 status="failed",
                 result=final_output if final_output.strip() else None,
-                error=stderr_text.strip() or f"Exit code: {proc_state}",
+                error=final_error,
                 logs=logs,
                 progress=progress,
                 session_id=worker_id,

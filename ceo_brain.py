@@ -147,11 +147,6 @@ def build_skill_instructions(skills: list[str]) -> str:
 # CEO Brain 类
 # ─────────────────────────────────────────
 
-
-# ─────────────────────────────────────────
-# CEO Brain 类
-# ─────────────────────────────────────────
-
 class CEOBrain:
     """
     CEO Brain — 任务拆解 + 结果汇总
@@ -165,7 +160,7 @@ class CEOBrain:
 
     def __init__(self, model: str = None):
         self.model = model
-        self.harness = AgentSwarmHarness()
+        self.harness = AgentSwarmHarness(model=model)
 
     def decompose(self, task_description: str, use_llm: bool = None) -> dict:
         """
@@ -175,8 +170,8 @@ class CEOBrain:
         - 如果任务简单（有关键词匹配），用规则快速拆解
         - 如果任务复杂（模糊、多意图），交给 LLM 智能理解
         """
-        # 简单检测：是否有多意图信号（"和"、"然后"、"同时"、"并且"）
-        multi_intent_signals = ["和", "然后", "同时", "并且", "以及", "并且", "加", "或者", "或"]
+        # 多意图信号检测：是否包含复合连接词（说明任务有多个意图）
+        multi_intent_signals = ["和", "然后", "同时", "并且", "以及", "加", "或者", "或"]
         has_complex_structure = any(sig in task_description for sig in multi_intent_signals)
 
         # 模糊信号：没有明确类型关键词时

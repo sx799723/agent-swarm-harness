@@ -42,14 +42,16 @@ class AgentSwarmHarness:
     5. 汇总结果
     """
 
-    def __init__(self, max_concurrent: int = 7, max_retries: int = 3):
+    def __init__(self, max_concurrent: int = 7, max_retries: int = 3, model: str = None):
         """
         Args:
             max_concurrent: 最大并发 Worker 数
             max_retries: 最大重试次数
+            model: 可选的模型名称（传递给 WorkerPool，目前为预留参数）
         """
         self.max_concurrent = max_concurrent
         self.max_retries = max_retries
+        self.model = model
         self._pool = get_worker_pool()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent)
 
