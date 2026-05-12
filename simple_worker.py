@@ -35,10 +35,17 @@ def _parse_result(result):
 
 
 def _get_tools():
+    """所有 Worker 共享 Monica 的全部工具（同一进程空间）"""
     from tools.file_tools import write_file_tool, read_file_tool, patch_tool, search_tool
     from tools.terminal_tool import terminal_tool
-    from tools.browser_tool import browser_navigate, browser_snapshot
-    return write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, browser_navigate, browser_snapshot
+    from tools.browser_tool import browser_navigate, browser_snapshot, browser_vision
+    from tools.code_execution_tool import execute_code
+    return (
+        write_file_tool, read_file_tool, patch_tool, search_tool,
+        terminal_tool,
+        browser_navigate, browser_snapshot, browser_vision,
+        execute_code,
+    )
 
 
 def ddg_search(query: str, limit: int = 5) -> str:
@@ -151,7 +158,10 @@ def execute_goal(goal: str, context) -> dict:
     output_dir = context.get("output_dir", workspace)
     os.makedirs(output_dir, exist_ok=True)
 
-    write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, browser_navigate, browser_snapshot = _get_tools()
+    (write_file_tool, read_file_tool, patch_tool, search_tool,
+     terminal_tool,
+     browser_navigate, browser_snapshot, browser_vision,
+     execute_code) = _get_tools()
 
     # ═══════════════════════════════════════════════════════════
     # 工具路由（基于LLM生成的【任务指令】JSON）
@@ -308,6 +318,40 @@ print('Patched 1 occurrence')
             }
         except Exception as e:
             return {"status": "error", "error": f"browser_snapshot失败: {e}"}
+
+    elif tool_name == "browser_vision":
+        question = params.get("question", params.get("query", "这张截图里有什么关键信息？"))
+        try:
+            vision_str = browser_vision(question=question)
+            vision_result = _parse_result(vision_str)
+            if isinstance(vision_result, dict) and vision_result.get("success"):
+                return {
+                    "status": "success",
+                    "worker_output": f"📸 视觉分析:\n{vision_result.get('analysis', '')}",
+                    "analysis": vision_result.get("analysis", "")[:5000],
+                    "tool": "browser_vision"
+                }
+            else:
+                return {"status": "error", "error": vision_result.get("error", "browser_vision失败")}
+        except Exception as e:
+            return {"status": "error", "error": f"browser_vision失败: {e}"}
+
+    elif tool_name == "execute_code" or tool_name == "code_execution":
+        code = params.get("code", params.get("python", ""))
+        if not code:
+            return {"status": "error", "error": "execute_code缺少code参数"}
+        try:
+            result_str = execute_code(code=code)
+            result = _parse_result(result_str)
+            output = result.get("result", "") if isinstance(result, dict) else str(result)
+            return {
+                "status": "success",
+                "worker_output": f"代码执行结果:\n{output[:5000]}",
+                "execution_result": output[:5000],
+                "tool": "execute_code"
+            }
+        except Exception as e:
+            return {"status": "error", "error": f"execute_code失败: {e}"}
 
     else:
         return {
