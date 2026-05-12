@@ -237,17 +237,15 @@ worker_type 类型说明：
 输出 JSON，不要有其他文字："""
 
         try:
-            # 用curl直调MiniMax API（绕过hermes配置问题）
+            # 用curl直调MiniMax API
             import subprocess, json as json_module, os
 
-            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-            if not api_key:
-                r = subprocess.run(["hermes", "config", "get", "api_key"], capture_output=True, text=True)
-                if r.returncode == 0:
-                    for line in r.stdout.strip().split("\n"):
-                        parts = line.split("=")
-                        if len(parts) == 2 and parts[0].strip() in ("api_key", "OPENAI_API_KEY"):
-                            api_key = parts[1].strip()
+            # 读取API key（优先从key文件，文件被.gitignore保护）
+            key_file = os.path.join(os.path.dirname(__file__), ".api_key")
+            api_key = ""
+            if os.path.exists(key_file):
+                with open(key_file) as f:
+                    api_key = f.read().strip()
 
             req_body = {
                 "model": "MiniMax-M2.7-highspeed",
@@ -518,17 +516,15 @@ worker_type 类型说明：
 只输出JSON："""
 
         try:
-            # 用curl直调MiniMax API（绕过hermes配置问题）
+            # 用curl直调MiniMax API
             import subprocess, json as json_module, os
 
-            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-            if not api_key:
-                r = subprocess.run(["hermes", "config", "get", "api_key"], capture_output=True, text=True)
-                if r.returncode == 0:
-                    for line in r.stdout.strip().split("\n"):
-                        parts = line.split("=")
-                        if len(parts) == 2 and parts[0].strip() in ("api_key", "OPENAI_API_KEY"):
-                            api_key = parts[1].strip()
+            # 读取API key（优先从key文件，文件被.gitignore保护）
+            key_file = os.path.join(os.path.dirname(__file__), ".api_key")
+            api_key = ""
+            if os.path.exists(key_file):
+                with open(key_file) as f:
+                    api_key = f.read().strip()
 
             req_body = {
                 "model": "MiniMax-M2.7-highspeed",
@@ -546,6 +542,10 @@ worker_type 类型说明：
             result = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=60)
             resp = json.loads(result.stdout.strip())
             text = resp.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            # 过滤掉<think>...</think>思考标签（MiniMax特有）
+            import re
+            text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
             # 去掉可能的markdown代码块
             if text.startswith("```"):
                 parts = text.split("```")
@@ -554,6 +554,7 @@ worker_type 类型说明：
                     text = text[4:]
             text = text.strip()
             task_obj = json.loads(text)
+            return json.dumps(task_obj, ensure_ascii=False)
         except Exception as e:
             # LLM失败时返回描述性JSON
             return json.dumps({
