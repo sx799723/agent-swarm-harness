@@ -92,7 +92,7 @@ SKILL_ROUTING = {
 
 # Worker 默认 skill（未匹配时使用）
 WORKER_DEFAULT_SKILLS = {
-    "code_worker": "software-development/skill-creator",
+    "code_worker": "code-execution",
     "ppt_worker": "productivity/ppt-workflow",
     "video_worker": "media/youtube-content",
     "ui_worker": "creative/baoyu-cover-image",
