@@ -19,9 +19,8 @@ import uuid
 sys.path.insert(0, os.path.dirname(__file__))
 from config import PROJECT_ROOT
 from session_store import (
-    create_task,
-    get_task,
-    update_task_status,
+    create_task, get_task, get_worker, update_task_status, update_worker_status,
+    get_db, harness_event_log, worker_pool_event_log, get_task_events,
 )
 from harness import AgentSwarmHarness
 
@@ -609,6 +608,18 @@ worker_type 类型说明：
             wave_num = wave_idx + 1
             print(f"[CEO] 执行 Wave {wave_num}，{len(wave_workers)} 个 Worker 并行...")
 
+            # 记录 DAG wave 事件
+            conn = get_db()
+            harness_event_log(conn, "wave_start", task_id, None, {
+                "wave": wave_num,
+                "total_waves": len(waves),
+                "worker_count": len(wave_workers),
+                "worker_ids": [w["id"] for w in wave_workers],
+                "worker_types": [w.get("worker_type") for w in wave_workers],
+            })
+            conn.commit()
+            conn.close()
+
             if wave_idx > 0:
                 # Hand Passing：把上游产出注入下游 Worker 的 goal
                 wave_workers = self._inject_upstream_results(wave_workers, all_results)
@@ -619,6 +630,17 @@ worker_type 类型说明：
                 parallel=True,  # 同 wave 内并行
             )
             all_results.update(wave_result.get("worker_results", {}))
+
+            # 记录 DAG wave 完成事件
+            conn = get_db()
+            completed_in_wave = sum(1 for wid, r in wave_result.get("worker_results", {}).items() if r.get("status") == "completed")
+            harness_event_log(conn, "wave_complete", task_id, None, {
+                "wave": wave_num,
+                "completed": completed_in_wave,
+                "failed": len(wave_workers) - completed_in_wave,
+            })
+            conn.commit()
+            conn.close()
 
             # 如果有任何 worker 失败，可以选择提前终止
             failed = [wid for wid, r in wave_result.get("worker_results", {}).items()
