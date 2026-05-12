@@ -233,9 +233,6 @@ class WorkerPool:
         Returns:
             worker_id（与传入的一致）
         """
-        skill = WORKER_TYPE_SKILLS.get(worker_type, "")
-        skill_flag = f"-s {skill}" if skill else ""
-
         # 拼接 context
         context_str = ""
         if context:
@@ -243,16 +240,24 @@ class WorkerPool:
 
         full_goal = goal + context_str
 
-        # 构建命令
-        cmd = f"hermes chat {skill_flag} -q {json.dumps(full_goal)} --quiet"
+        # 构建 Worker 输入 JSON
+        worker_input = json.dumps({
+            "goal": goal,
+            "context": context or {}
+        })
 
-        print(f"[WorkerPool] Spawning {worker_id} (type={worker_type}, priority={priority})")
+        # 使用 Simple Worker 直接调用工具（不再是 hermes chat 外包）
+        HERMES_VENV = "/Users/yutanglao/.hermes/hermes-agent/venv/bin/python3"
+        cmd = f'{HERMES_VENV} "{PROJECT_ROOT}/simple_worker.py" {json.dumps(worker_input)}'
+
+        print(f"[WorkerPool] Spawning {worker_id} (type={worker_type}, tool=simple_worker)")
         print(f"[WorkerPool] Goal: {goal[:80]}...")
 
         self._worker_pool_event_log("spawn", worker_id, {
             "worker_type": worker_type,
             "priority": priority,
             "timeout_seconds": timeout_seconds,
+            "mode": "simple_worker"
         })
 
         # 启动子进程（使用 PIPE 以便实时读取 stdout/stderr）

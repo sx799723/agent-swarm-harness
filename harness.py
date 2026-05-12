@@ -285,7 +285,7 @@ class AgentSwarmHarness:
 
         return results
 
-    def retry_failed(self, worker_ids: list[str]) -> dict[str, WorkerResult]:
+    def retry_failed(self, task_id: str, worker_ids: list[str]) -> dict[str, WorkerResult]:
         """
         重试失败的 Workers
         """
@@ -306,7 +306,7 @@ class AgentSwarmHarness:
                 results[wid] = WorkerResult(worker_id=wid, status="completed", result=worker.get("result"))
 
         if to_retry:
-            retry_results = self.execute_all(to_retry)
+            retry_results = self.execute_all(task_id, to_retry)
             results.update(retry_results)
 
         return results
@@ -357,7 +357,7 @@ class AgentSwarmHarness:
             failed_ids = [wid for wid, r in results.items() if r.status == "failed"]
             if failed_ids:
                 print(f"[Harness] {len(failed_ids)} workers failed, auto-retrying...")
-                retry_results = self.retry_failed(failed_ids)
+                retry_results = self.retry_failed(task_id, failed_ids)
                 results.update(retry_results)
 
         # 4. 更新任务状态

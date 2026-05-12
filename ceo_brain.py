@@ -407,8 +407,14 @@ worker_type 类型说明：
 
     def _make_worker_goal(self, goal: str, context: dict = None, worker_type: str = None) -> str:
         """
-        给 Worker 的 goal 加上执行指令前缀 + Context Passing 指令 + Skills 动态路由指令
-        要求 Worker 实际执行任务，并告知上下游产出位置和可用的 skills
+        给 Worker 的 goal 加上：
+        1. 执行指令前缀
+        2. Context Passing 指令
+        3. Skills 动态路由指令
+        4. 【任务指令】（LLM生成的结构化JSON，Simple Worker直接解析）
+
+        核心改进：用LLM分析goal，生成结构化的工具调用指令，
+        避免Simple Worker用正则猜测参数导致的错误。
         """
         lines = [
             "你是一个Worker。你的职责是实际完成任务，而不是仅返回文本描述。\n",
@@ -417,18 +423,24 @@ worker_type 类型说明：
         # ─── Skills 动态路由 ───
         skills = []
         if worker_type:
-            from_task_goal = goal  # 使用原始 task goal 来匹配 skill
+            from_task_goal = goal
             skills = select_skill_for_task(worker_type, from_task_goal)
             if skills:
                 lines.append(f"【Skills 可用】: {', '.join(skills)}")
                 lines.append("")
+
+        # ─── LLM生成结构化任务指令 ───
+        task_instruction = self._llm_make_task_instruction(goal, worker_type)
+        lines.append("【任务指令】")
+        lines.append(task_instruction)
+        lines.append("---")
+        lines.append("")
 
         if context:
             lines.append(f"当前任务ID: {context.get('task_id', 'N/A')}")
             lines.append(f"你的工作目录: {context.get('output_dir', PROJECT_ROOT)}")
             lines.append("")
 
-            # 上游依赖信息
             upstream = context.get("input_from", [])
             if upstream:
                 lines.append("【重要：上游Worker产出】")
@@ -437,29 +449,77 @@ worker_type 类型说明：
                 lines.append("请在上述目录中查看上游Worker的产出文件，作为你的输入参考。")
                 lines.append("")
 
-            # 下游产出约定
             lines.append("【你的产出】")
             lines.append(f"  产出目录: {context.get('output_dir', PROJECT_ROOT)}")
             lines.append("  请将你的产出文件写入该目录，便于下游Worker读取。")
             lines.append("")
 
-        # ─── Skills 调用指令 ───
-        if skills:
-            skill_str = ",".join(skills)
-            lines.append(
-                f"【Skills 调用指令】\n"
-                f"请使用 hermes chat -s {skill_str} 来加载对应技能后执行任务。\n"
-            )
-
         lines.extend([
             "要求：",
-            "1. 如果需要写文件，使用 write_file 工具实际写入",
+            "1. 优先使用【任务指令】中的JSON来执行，它包含精确的工具和参数",
             "2. 如果需要运行代码，使用 terminal 工具实际执行",
             "3. 完成后返回执行结果（实际输出/文件路径）\n",
-            "任务：\n" + goal,
+            f"原始任务：{goal}",
         ])
 
         return "\n".join(lines)
+
+    def _llm_make_task_instruction(self, goal: str, worker_type: str = None) -> str:
+        """
+        用LLM分析goal，生成结构化的工具调用指令JSON。
+
+        返回格式：
+        {
+          "tool": "terminal|write_file|read_file|patch|search",
+          "params": { ... },
+          "description": "..."
+        }
+        """
+        import subprocess, json as json_module
+
+        prompt = f"""分析以下任务，生成结构化的工具调用指令。
+
+任务：{goal}
+
+要求：
+1. 分析任务意图，判断需要什么工具
+2. 提取精确的参数（路径、内容、命令等）
+3. 只输出JSON，不要其他内容
+
+支持的工具：
+- terminal: 执行shell命令（command参数）
+- write_file: 写文件（path和content参数）
+- read_file: 读取文件（path参数）
+- patch: 搜索替换文件（path, old_string, new_string参数）
+- search: 搜索文件内容（pattern, path, target参数）
+
+输出格式（必须是有效JSON）：
+{{"tool": "工具名", "params": {{工具参数}}, "description": "任务简述"}}
+
+只输出JSON："""
+
+        try:
+            result = subprocess.run(
+                ["hermes", "chat", "-q", prompt, "-Q"],
+                capture_output=True, text=True, timeout=30,
+                cwd="/Users/yutanglao/.hermes/hermes-agent"
+            )
+            text = result.stdout.strip()
+            # 去掉可能的markdown代码块
+            if text.startswith("```"):
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            text = text.strip()
+            task_obj = json_module.loads(text)
+            return json_module.dumps(task_obj, ensure_ascii=False)
+        except Exception as e:
+            # LLM失败时返回描述性JSON
+            return json_module.dumps({
+                "tool": "unknown",
+                "params": {},
+                "description": f"LLM failed: {str(e)}. Original task: {goal}"
+            }, ensure_ascii=False)
 
     def execute(self, decomposition: dict, parallel: bool = True) -> dict:
         """

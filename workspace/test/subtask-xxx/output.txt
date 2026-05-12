@@ -1,0 +1,1 @@
+写文件：/tmp/monoswarm_test.txt，内容：MonoSwarm Simple Worker测试成功！
