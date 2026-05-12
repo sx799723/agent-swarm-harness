@@ -37,7 +37,8 @@ def _parse_result(result):
 def _get_tools():
     from tools.file_tools import write_file_tool, read_file_tool, patch_tool, search_tool
     from tools.terminal_tool import terminal_tool
-    return write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool
+    from tools.browser_tool import browser_navigate, browser_snapshot
+    return write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, browser_navigate, browser_snapshot
 
 
 def ddg_search(query: str, limit: int = 5) -> str:
@@ -150,7 +151,7 @@ def execute_goal(goal: str, context) -> dict:
     output_dir = context.get("output_dir", workspace)
     os.makedirs(output_dir, exist_ok=True)
 
-    write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, web_search_tool, web_extract_tool = _get_tools()
+    write_file_tool, read_file_tool, patch_tool, search_tool, terminal_tool, browser_navigate, browser_snapshot = _get_tools()
 
     # ═══════════════════════════════════════════════════════════
     # 工具路由（基于LLM生成的【任务指令】JSON）
@@ -269,36 +270,44 @@ print('Patched 1 occurrence')
             "tool": "patch"
         }
 
-    elif tool_name == "web_search":
-        query = params.get("query", params.get("q", ""))
-        limit = params.get("limit", 5)
-        if not query:
-            return {"status": "error", "error": "web_search工具缺少query参数"}
-        try:
-            result = ddg_search(query=query, limit=limit)
-            return {
-                "status": "success",
-                "worker_output": result[:5000] if result else "无结果",
-                "results": result,
-                "tool": "web_search"
-            }
-        except Exception as e:
-            return {"status": "error", "error": f"web_search失败: {e}"}
-
-    elif tool_name == "web_extract":
-        url = params.get("url", "")
+    elif tool_name == "web_search" or tool_name == "browser_navigate":
+        # browser_navigate 是通用网页访问工具，支持任何 URL
+        url = params.get("url", params.get("q", ""))
         if not url:
-            return {"status": "error", "error": "web_extract工具缺少url参数"}
+            return {"status": "error", "error": "缺少url参数"}
         try:
-            result = ddg_extract(url=url)
+            # 自动加上 https:// 如果没有协议
+            if not url.startswith(('http://', 'https://')):
+                url = 'https://' + url
+            result_str = browser_navigate(url=url)
+            result = _parse_result(result_str)
+            if result.get("success"):
+                snapshot = result.get("snapshot", "")
+                return {
+                    "status": "success",
+                    "worker_output": f"✅ 访问成功: {url}\n{snapshot[:3000]}",
+                    "url": url,
+                    "snapshot": snapshot[:5000],
+                    "tool": "browser_navigate"
+                }
+            else:
+                return {"status": "error", "error": result.get("error", "访问失败")}
+        except Exception as e:
+            return {"status": "error", "error": f"browser_navigate失败: {e}"}
+
+    elif tool_name == "web_extract" or tool_name == "browser_snapshot":
+        try:
+            snapshot_str = browser_snapshot()
+            snapshot_result = _parse_result(snapshot_str)
+            snapshot_text = snapshot_result.get("snapshot", "") if isinstance(snapshot_result, dict) else str(snapshot_result)
             return {
                 "status": "success",
-                "worker_output": result[:5000] if result else "无内容",
-                "content": result,
-                "tool": "web_extract"
+                "worker_output": f"页面快照:\n{snapshot_text[:5000]}",
+                "snapshot": snapshot_text[:5000],
+                "tool": "browser_snapshot"
             }
         except Exception as e:
-            return {"status": "error", "error": f"web_extract失败: {e}"}
+            return {"status": "error", "error": f"browser_snapshot失败: {e}"}
 
     else:
         return {
