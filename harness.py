@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Agent Swarm Harness
+MonoSwarm — 自主路径推理 + 工具调用能力
 调度层 — 连接 CEO Brain 和 Worker Pool 的核心调度器
 """
 
@@ -342,7 +342,7 @@ class AgentSwarmHarness:
         conn.close()
 
         # 2. 执行
-        results = self.execute_all(worker_ids, parallel=parallel)
+        results = self.execute_all(task_id, worker_ids, parallel=parallel)
 
         # 记录 execute 事件
         conn = get_db()
