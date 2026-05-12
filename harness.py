@@ -68,6 +68,14 @@ class AgentSwarmHarness:
         """
         task_id = create_task(title, description, goal, parent_id)
         print(f"[Harness] Task created: {task_id} - {title}")
+        # 激活 event_log：记录任务创建
+        conn = get_db()
+        harness_event_log(conn, "task_created", task_id, None, {
+            "title": title,
+            "parent_id": parent_id,
+        })
+        conn.commit()
+        conn.close()
         return task_id
 
     def dispatch(self, task_id: str, workers: list[dict]) -> list[str]:
@@ -121,6 +129,7 @@ class AgentSwarmHarness:
                 "worker_type": worker_type,
                 "goal": goal[:100],
             })
+            conn.commit()
             conn.close()
 
         print(f"[Harness] Dispatched {len(worker_ids)} workers for task {task_id}")
@@ -214,10 +223,11 @@ class AgentSwarmHarness:
                         update_worker_status(wid, result.status, result=result.result, error=result.error)
                         # 记录 complete 事件
                         conn = get_db()
-                        harness_event_log(conn, "complete", worker["task_id"], wid, {
+                        harness_event_log(conn, "worker_complete", worker["task_id"], wid, {
                             "status": result.status,
                             "error": result.error,
                         })
+                        conn.commit()
                         conn.close()
                         results[wid] = result
                         completed_this_round.append(wid)
@@ -253,6 +263,7 @@ class AgentSwarmHarness:
                         "status": result.status,
                         "error": result.error,
                     })
+                    conn.commit()
                     conn.close()
                     results[wid] = result
 
@@ -339,6 +350,7 @@ class AgentSwarmHarness:
             "worker_types": [get_worker(wid).get("worker_type", "unknown") for wid in worker_ids if get_worker(wid)],
             "parallel": parallel,
         })
+        conn.commit()
         conn.close()
 
         # 2. 执行
@@ -350,6 +362,7 @@ class AgentSwarmHarness:
             "completed": sum(1 for r in results.values() if r.status == "completed"),
             "failed": sum(1 for r in results.values() if r.status == "failed"),
         })
+        conn.commit()
         conn.close()
 
         # 3. 自动重试
@@ -383,6 +396,7 @@ class AgentSwarmHarness:
             "completed": sum(1 for r in results.values() if r.status == "completed"),
             "failed": sum(1 for r in results.values() if r.status == "failed"),
         })
+        conn.commit()
         conn.close()
 
         return {

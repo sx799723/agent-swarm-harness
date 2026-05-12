@@ -275,7 +275,7 @@ def worker_pool_event_log(conn, event_type: str, task_id: str, worker_id: str, d
 
 
 def get_event_log(entity_type: str = None, entity_id: str = None, limit: int = 50) -> list[dict]:
-    """获取事件日志"""
+    """获取事件日志（已有函数，增加便捷包装）"""
     conn = get_db()
     cur = conn.cursor()
     if entity_type and entity_id:
@@ -294,7 +294,21 @@ def get_event_log(entity_type: str = None, entity_id: str = None, limit: int = 5
         cur.execute("SELECT * FROM event_log ORDER BY created_at DESC LIMIT ?", (limit,))
     rows = cur.fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    return [dict(row) for row in rows]
+
+
+def get_task_events(task_id: str, limit: int = 100) -> list[dict]:
+    """便捷包装：获取某个task的所有事件（按时间正序）"""
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT * FROM event_log WHERE task_id = ?
+           ORDER BY created_at ASC LIMIT ?""",
+        (task_id, limit)
+    )
+    rows = cur.fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
 
 
 # ─────────────────────────────────────────
