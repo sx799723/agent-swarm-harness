@@ -491,13 +491,16 @@ worker_type 类型说明：
         os.makedirs(workspace, exist_ok=True)
 
         # 根据 worker 类型确定依赖关系
-        # doc/qa 依赖 code（代码产出是数据来源）
-        # ppt 依赖 doc/qa（报告是 PPT 内容来源）
-        dependency_rules = {
-            "doc_worker":  ["code_worker"],    # 文档依赖代码产出
-            "qa_worker":   ["code_worker"],    # 测试依赖代码产出
-            "ppt_worker":  ["doc_worker", "code_worker"],  # PPT 依赖文档/代码
-        }
+        # 动态推断：基于 subtasks 中实际存在的 worker_type 推断依赖
+        # 规则：
+        #   1. code_worker 是大多数任务的基础，最先执行（无特殊依赖）
+        #   2. doc_worker 依赖 code_worker（如两者都存在）
+        #   3. qa_worker 依赖 code_worker（如两者都存在）
+        #   4. ppt_worker 依赖 doc_worker（如 doc 存在）或 code_worker（如只有 code）
+        #   5. ui_worker/video_worker 无特殊依赖（基础层）
+        #   6. research_worker 无特殊依赖（基础层）
+        #   7. generic_worker 无特殊依赖（基础层）
+        dependency_rules = self._infer_dependency_rules(subtasks)
 
         # 3. 为每个 subtask 构造完整的 context（含 Context Passing 信息）
         workers = []
@@ -580,14 +583,85 @@ worker_type 类型说明：
             "aggregated": aggregated,
         }
 
+    def _infer_dependency_rules(self, subtasks: list[dict]) -> dict[str, list[str]]:
+        """
+        根据 subtasks 中实际存在的 worker_type 动态推断依赖规则。
+
+        依赖推断策略：
+        1. 收集 subtasks 中所有实际出现的 worker_type
+        2. 如果同时存在 code + doc → doc 依赖 code
+        3. 如果同时存在 code + qa  → qa 依赖 code
+        4. 如果同时存在 code + ppt：
+             - 有 doc → ppt 依赖 doc
+             - 无 doc → ppt 依赖 code
+        5. ui/video/research 视为基础层，无上游依赖
+        6. generic 视为基础层，无上游依赖
+
+        Returns:
+            dict[worker_type, list[upstream_worker_type]]
+            例如: {"doc_worker": ["code_worker"], "ppt_worker": ["doc_worker"]}
+        """
+        present_types = {st["worker_type"] for st in subtasks}
+        rules = {}
+
+        # doc_worker 依赖 code_worker（如果两者都存在）
+        if "doc_worker" in present_types and "code_worker" in present_types:
+            rules["doc_worker"] = ["code_worker"]
+
+        # qa_worker 依赖 code_worker（如果两者都存在）
+        if "qa_worker" in present_types and "code_worker" in present_types:
+            rules["qa_worker"] = ["code_worker"]
+
+        # ppt_worker 依赖策略
+        if "ppt_worker" in present_types:
+            if "doc_worker" in present_types:
+                # 有 doc 时依赖 doc（doc 是 PPT 内容来源）
+                rules["ppt_worker"] = ["doc_worker"]
+            elif "code_worker" in present_types:
+                # 无 doc 但有 code 时依赖 code（兜底）
+                rules["ppt_worker"] = ["code_worker"]
+
+        return rules
+
+    def _build_dependency_graph_from_context(self, workers: list[dict]) -> dict[str, list[str]]:
+        """
+        从每个 worker's context['input_from'] 动态构建依赖图。
+        input_from 已包含 upstream worker_id 列表，直接用即可。
+        覆盖/补充 hardcoded dependency_rules。
+        """
+        graph = {}  # worker_id -> [upstream_worker_id, ...]
+
+        # 快速构建 worker_id → worker 对象的映射
+        id_to_worker = {w["id"]: w for w in workers}
+
+        for w in workers:
+            wid = w["id"]
+            input_from = w.get("context", {}).get("input_from", [])
+            # input_from 是 [{worker_id, worker_type, output_dir}, ...]
+            deps = [up["worker_id"] for up in input_from if up["worker_id"] in id_to_worker]
+            graph[wid] = deps
+
+        return graph
+
     def _build_execution_waves(self, workers: list[dict], dependency_rules: dict) -> list[list[dict]]:
         """
         分析 Worker 之间的依赖关系，构建执行层级（waves）
 
+        优先使用动态依赖图（context['input_from']），无时才回退到 hardcoded dependency_rules。
+
         同一个 wave 内的 worker 无依赖关系，可以并行
         不同 wave 必须顺序执行（上一个 wave 完成后下一个 wave 才能开始）
         """
-        # 建立 worker_type → worker 对象的映射
+        # ── 优先：从 context['input_from'] 构建动态依赖图 ──
+        # input_from 存在时用动态图（更精确），否则回退 hardcoded rules
+        use_dynamic = any(w.get("context", {}).get("input_from") for w in workers)
+
+        if use_dynamic:
+            dynamic_graph = self._build_dependency_graph_from_context(workers)
+        else:
+            dynamic_graph = {}
+
+        # 建立 worker_type → worker 对象的映射（用于 hardcoded 回退路径）
         type_to_worker = {}
         for w in workers:
             wt = w["worker_type"]
@@ -597,20 +671,27 @@ worker_type 类型说明：
 
         # 拓扑排序分 wave
         waves = []
-        remaining = set(w["id"] for w in workers)
-        completed_types = set()
+        remaining = {w["id"] for w in workers}
+        completed_ids: set[str] = set()   # 已完成的 worker_id（用于动态图）
+        completed_types: set[str] = set()  # 已完成的 worker_type（用于 hardcoded 回退）
 
         while remaining:
-            # 找所有依赖都已完成的 worker（没有依赖的也在此）
             wave = []
             for w in workers:
                 if w["id"] not in remaining:
                     continue
-                deps = dependency_rules.get(w["worker_type"], [])
-                # 检查所有依赖类型的 worker 是否都已完成
-                all_deps_done = all(
-                    st in completed_types for st in deps if st in type_to_worker
-                )
+
+                if use_dynamic and dynamic_graph:
+                    # ── 动态依赖：检查 upstream worker_id 是否全部完成 ──
+                    upstream_ids = dynamic_graph.get(w["id"], [])
+                    all_deps_done = all(up_id in completed_ids for up_id in upstream_ids)
+                else:
+                    # ── Hardcoded 回退：检查依赖类型是否已全部完成 ──
+                    deps = dependency_rules.get(w["worker_type"], [])
+                    all_deps_done = all(
+                        st in completed_types for st in deps if st in type_to_worker
+                    )
+
                 if all_deps_done:
                     wave.append(w)
 
@@ -623,6 +704,7 @@ worker_type 类型说明：
             waves.append(wave)
             for w in wave:
                 remaining.discard(w["id"])
+                completed_ids.add(w["id"])
                 completed_types.add(w["worker_type"])
 
         return waves

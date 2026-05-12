@@ -35,7 +35,7 @@ from config import PROJECT_ROOT
 # ─────────────────────────────────────────
 
 WORKER_TYPE_SKILLS = {
-    "code_worker":     "code-execution",           # 专门执行代码修改任务
+    "code_worker":     "software-development/skill-creator",
     "ppt_worker":      "productivity/ppt-workflow",
     "video_worker":    "media/youtube-content",
     "ui_worker":       "creative/baoyu-comic",

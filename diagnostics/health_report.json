@@ -1,0 +1,49 @@
+{
+  "generated_at": "2026-05-12T04:32:19.864619",
+  "uptime_seconds": 4e-06,
+  "checks": {
+    "core_modules": {
+      "worker_pool": {
+        "status": "ok",
+        "version": "unknown"
+      },
+      "session_store": {
+        "status": "ok",
+        "version": "unknown"
+      },
+      "ceo_brain": {
+        "status": "ok",
+        "version": "unknown"
+      },
+      "harness": {
+        "status": "ok",
+        "version": "unknown"
+      }
+    },
+    "file_health": {
+      "swarm_db": {
+        "status": "ok",
+        "path": "/Users/yutanglao/.hermes/agent-swarm/swarm.db"
+      },
+      "config_py": {
+        "status": "ok",
+        "path": "/Users/yutanglao/.hermes/agent-swarm/config.py"
+      }
+    },
+    "runtime": {
+      "worker_pool_spawn": {
+        "status": "ok",
+        "worker_count": 0
+      },
+      "session_store_init": {
+        "status": "ok",
+        "module": "session_store"
+      },
+      "ceo_brain_load": {
+        "status": "ok"
+      }
+    },
+    "exception_history_count": 0
+  },
+  "overall": "healthy"
+}

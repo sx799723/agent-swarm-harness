@@ -132,7 +132,7 @@ class AgentSwarmHarness:
             goal=worker["goal"],
             context=worker.get("context"),
             max_retries=worker.get("max_retries", self.max_retries),
-            timeout=worker.get("timeout", 7200),
+            timeout_seconds=worker.get("timeout", 7200),
             priority=worker.get("priority", 0),
         )
 
@@ -149,8 +149,9 @@ class AgentSwarmHarness:
         执行所有 Workers
 
         True 并发：
-          1. 先 spawn 全部（异步，不等待）
-          2. 然后并发地 wait_for_result 全部
+          1. 按优先级排序（高→低）
+          2. 所有 worker 同时 spawn（异步，不等待）
+          3. 按优先级顺序 wait_for_result 全部完成
 
         顺序执行：
           1. spawn 一个
@@ -161,10 +162,18 @@ class AgentSwarmHarness:
         """
         results = {}
 
+        # 按优先级排序（高优先级在前），保持顺序稳定性
+        def get_priority(wid: str) -> int:
+            w = get_worker(wid)
+            return w.get("priority", 0) if w else 0
+
+        sorted_ids = sorted(worker_ids, key=get_priority, reverse=True)
+
         if parallel:
-            # ─── True 并发 ───
-            # 所有 worker 同时启动，互不等待
-            for wid in worker_ids:
+            # ─── 真正并发 ───
+            # Phase 1: 同时 spawn 所有 workers（非阻塞，各自独立线程监控）
+            spawned = []
+            for wid in sorted_ids:
                 worker = get_worker(wid)
                 if not worker:
                     continue
@@ -174,24 +183,33 @@ class AgentSwarmHarness:
                     worker_type=worker["worker_type"],
                     goal=worker["goal"],
                     context=worker.get("context"),
-                    max_retries=worker.get("max_retries"),
+                    max_retries=worker.get("max_retries", self.max_retries),
+                    timeout_seconds=worker.get("timeout", 7200),
+                    priority=worker.get("priority", 0),
                 )
+                spawned.append(wid)
 
-            # 等待全部完成（并发轮询）
-            pending = set(worker_ids)
+            # Phase 2: 等待所有 workers 完成（所有 worker 同时运行，按完成顺序收集结果）
+            pending = set(spawned)
             while pending:
+                # 每次轮询所有 pending worker，把已完成的移出
+                # 使用 list(pending) 快照避免迭代中修改 set 导致跳项
+                completed_this_round = []
                 for wid in list(pending):
                     result = self._pool.get_result(wid)
                     if result is not None:
                         update_worker_status(wid, result.status, result=result.result, error=result.error)
                         results[wid] = result
-                        pending.remove(wid)
+                        completed_this_round.append(wid)
+                # 在循环外统一移除，避免在迭代中修改 set
+                for wid in completed_this_round:
+                    pending.discard(wid)
                 if pending:
-                    time.sleep(1.0)  # 不要高频轮询
+                    time.sleep(0.2)  # 缩短轮询间隔提升响应速度
 
         else:
             # ─── 顺序执行 ───
-            for wid in worker_ids:
+            for wid in sorted_ids:
                 worker = get_worker(wid)
                 if not worker:
                     continue
@@ -201,7 +219,9 @@ class AgentSwarmHarness:
                     worker_type=worker["worker_type"],
                     goal=worker["goal"],
                     context=worker.get("context"),
-                    max_retries=worker.get("max_retries"),
+                    max_retries=worker.get("max_retries", self.max_retries),
+                    timeout_seconds=worker.get("timeout", 7200),
+                    priority=worker.get("priority", 0),
                 )
                 result = self._pool.wait_for_result(wid)
                 if result:
@@ -228,9 +248,9 @@ class AgentSwarmHarness:
                         result=worker.get("result"),
                         error=worker.get("error"),
                     )
-                    pending.remove(wid)
+                    pending.discard(wid)
                 elif not worker:
-                    pending.remove(wid)
+                    pending.discard(wid)
 
             if pending:
                 time.sleep(poll_interval)

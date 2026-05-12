@@ -1,0 +1,3 @@
+{"timestamp": "2026-05-12T04:28:55.432037", "overall": "degraded (3 issue(s))", "uptime": 3e-06, "issues": ["[runtime.worker_pool_spawn] 'WorkerPool' object has no attribute 'worker_count'", "[runtime.session_store_init] cannot import name 'SessionStore' from 'session_store' (/Users/yutanglao/.hermes/agent-swarm/session_store.py)", "[runtime.ceo_brain_load] cannot import name 'CeoBrain' from 'ceo_brain' (/Users/yutanglao/.hermes/agent-swarm/ceo_brain.py)"]}
+{"timestamp": "2026-05-12T04:29:18.669470", "overall": "healthy", "uptime": 5e-06, "issues": []}
+{"timestamp": "2026-05-12T04:32:19.864754", "overall": "healthy", "uptime": 4e-06, "issues": []}

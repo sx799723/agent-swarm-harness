@@ -228,9 +228,9 @@ class AgentSwarmHarness:
                         result=worker.get("result"),
                         error=worker.get("error"),
                     )
-                    pending.remove(wid)
+                    pending.discard(wid)
                 elif not worker:
-                    pending.remove(wid)
+                    pending.discard(wid)
 
             if pending:
                 time.sleep(poll_interval)
